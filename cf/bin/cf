@@ -144,6 +144,13 @@ my %bools = (
 );
 sub parse_bool { return $bools{uc($_[0])} }
 
+sub parse_mode {
+    my $mode = $_[0];
+    # Make sure file mode numbers are interpreted in octal
+    $mode = "0$mode" if ( $mode =~ /^[1-9]/ );
+    return $mode;
+}
+
 push(@EXPORT, qw(&parse_string &parse_int &parse_float &parse_enum
 	@parse_bool));
 
@@ -155,13 +162,9 @@ my %parse_opt = (
     U => "OWNER",
     GROUP => \&parse_string,
     G => "GROUP",
-    MODE => sub {
-	my $mode = $_[0];
-	# Make sure file mode numbers are interpreted in octal
-	$mode = "0$mode" if ( $mode =~ /^[1-9]/ );
-	return $mode;
-    },
+    MODE => \&parse_mode,
     M => "MODE",
+    DIRMODE => \&parse_mode,
 
     CHANGE_TYPES => '',
     CHANGETYPE => 'CHANGE_TYPES',
@@ -216,6 +219,9 @@ my %parse_opt = (
     VERIFY => sub { parse_enum(uc($_[0]),
 	'NONE', 'CKSUM', 'MD5', 'BINARY'
     ) },
+
+    NEW_TIME => '',
+    NEWTIME => 'NEW_TIME',
 
     'TOC_FIELD' => sub {
 	my ($arg, $optref) = @_;
@@ -1694,6 +1700,11 @@ Also obeys the following options when checking
 
 sub CheckFile($%) {
     my ($path, %opts) = @_;
+
+    if ($opts{EXCLUDE} && IsExcluded($opts{EXCLUDE}, $path)) {
+	# Excluded from checks - never mind.
+	return;
+    }
     my $fi = GetFileInfo($path);
 
     if ($fi->type eq 'LINK') {
@@ -1998,8 +2009,12 @@ sub DirSync {
     my %src_exists = ();
 
     foreach my $file ( ReadDir($srcdir) ) {
-	FileSync("$srcdir/$file", "$destdir/$file", @args);
-	$src_exists{$file} = 1;
+	my $destfile = $file;
+	if ($opts{REMOTE_SRC}) {
+	    $destfile = Decode($destfile);
+	}
+	FileSync("$srcdir/$file", "$destdir/$destfile", @args);
+	$src_exists{$destfile} = 1;
     }
 
     if ($opts{'PURGE'}) {
@@ -2018,7 +2033,8 @@ sub DirSync {
 	foreach my $file ( ReadDir($destdir) ) {
 	    if ( !$src_exists{$file} ) {
 		my $path = "$destdir/$file";
-		unless ($excluding && IsExcluded($opts{EXCLUDE}, $path)) {
+		unless ($excluding &&
+			IsExcluded($opts{EXCLUDE}, "$srcdir/$file")) {
 		    RemoveFile($path, @args);
 		}
 	    }
@@ -2319,15 +2335,17 @@ sub LoadTOC($$$) {
 		= split(' ', $line);
 
 	my $path = Decode($epath);
+	# Re-encode to get canonical encoding.
+	my $repath = Encode($path);
 
 	# Concatenate path with url, but get rid of any "." in the middle.
 	my $fullpath;
 	if ($path eq '.') {
 	    $fullpath = $url;
 	} elsif ($path =~ m{^\./}) {
-	    $fullpath = $url . substr($path, 1);
+	    $fullpath = $url . Encode(substr($path, 1));
 	} else {
-	    $fullpath = "$url/$path";
+	    $fullpath = "$url/$repath";
 	}
 
 	my $fi = new FileInfo;
@@ -2366,7 +2384,7 @@ sub LoadTOC($$$) {
 	if (defined $file_info{$dir}) {
             # Parent directory is in cache - append this item to the
             # parent's directory listing.
-            push(@{$file_info{$dir}->dir}, basename($path));
+            push(@{$file_info{$dir}->dir}, basename($repath));
         }
     }
     Debug("loaded toc for $url, $count entries");
@@ -2584,7 +2602,8 @@ sub FileSync {
 	# No need to set permissions on link - or is there!?
 	return
     } elsif ($srctype eq 'DIR') {
-	MakeDir($destpath, %opts, MODE=>undef);
+	my $mode = $opts{DIRMODE};
+	MakeDir($destpath, %opts, MODE=>$mode);
 	if ( $opts{'RECURSE'} ) {
 	    $opts{'RECURSE'}--;
 	    DirSync($srcpath, $destpath, %opts);
@@ -2763,7 +2782,7 @@ sub GetSession() {
     # what exactly are it's duties:
     # *
     RealWriteFile("$session/init.sh", <<EOF );
-CF_SESSION=$session; export CF_SESSION
+CF_SESSION="$session"; export CF_SESSION
 cf_svcdir=`dirname \$0`
 case \$cf_svcdir in
 /*) : ;;
