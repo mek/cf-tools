@@ -612,6 +612,13 @@ sub LoadVars($) {
     return @vals;
 }
 
+sub load_vars {
+    my ($optref, $path) = get_options({}, @_);
+    return LoadVars($path);
+}
+push(@EXPORT, '&load_vars');
+
+
 sub LoadPerlMod($) {
     my ($script) = @_;
     my $dir = AbsolutePath(dirname($script));
