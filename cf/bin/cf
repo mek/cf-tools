@@ -2138,7 +2138,7 @@ sub MakeLink {
 
     my $temp = TempName($dest, %opts);
     symlink($src, $temp) or die $!;
-    MoveTemp($temp, $dest);
+    MoveTemp($temp, $dest, %opts);
 }
 
 # Synchronize contents of two directories.
