@@ -2718,7 +2718,7 @@ sub run {
     my $cmd = join(' ', @args);
 
     my $msg = "running";
-    $msg += "as $user" if length($user);
+    $msg .= " as $user" if length($user);
     MarkChange("$msg: $cmd");
 
     return unless ($update);
