@@ -744,17 +744,7 @@ sub all {
 
 
 #----------------------------------------------------------------------
-# Registry utility routines.
-
-if ($is_win) {
-    # MS-Windows
-
-    # Load registry.
-
-    require Win32;
-    require Win32::TieRegistry;
-    import Win32::TieRegistry(Delimiter => '/', SplitMultis => 1);
-}
+# Windows Registry utility routines.
 
 # Usage: Registry($keypath)
 # Get reference to named (relative to root) key in registry. Returns key
@@ -763,10 +753,18 @@ if ($is_win) {
 sub Registry($) {
     my $path = shift();
 
+    if (!defined $Cf::Registry) {
+	# Load registry.
+
+	require Win32;
+	require Win32::TieRegistry;
+	import Win32::TieRegistry(Delimiter => '/', SplitMultis => 1);
+    }
+
     # I have to use the fully qualified name for Registry as it is
     # dynamically imported - is there some way to avoid coding in the
     # package name here?
-    my $key = $Cfscript::Registry->{$path} 
+    my $key = $Cf::Registry->{$path} 
 	or die "can't open registry key, $path: $^E";
 
     return $key;
@@ -872,7 +870,7 @@ sub FlushRegistry($) {
 
     Debug("flushing ", $key->Path());
     if ( $update ) {
-	$Cfscript::Registry->Flush();
+	$Cf::Registry->Flush();
 	$key->RegFlushKey();
     }
 }
