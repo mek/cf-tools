@@ -9,17 +9,20 @@ BEGIN {
     push(@INC, $scriptdir);
 }
 
-use English;
 use Getopt::Long;
-use Pod::Usage;
 use File::Basename;
 
+
 my %simple_cmds = (
-    'man' => sub { pod2usage(-exitstatus => 0, -verbose => 2) },
-    'init-shell' => sub { print dirname($0)."/cfinit.sh\n" },
+    'man' => sub {
+	    require Pod::Usage;
+	    pod2usage(-exitstatus => 0, -verbose => 2)
+	},
+    'changes' => \&do_changes,
+    'require' => \&do_require,
 );
 my %commands = (
-    'changes' => \&do_changes,
+    'init-shell' => sub { print Config::Cf::GetSession()."/init.sh\n" },
     'copy' => \&do_copy,
     'directory' => \&do_directory,
     'directories' => \&do_directory,
@@ -29,9 +32,59 @@ my %commands = (
     'run' => \&do_run,
 );
 
+sub usage(;$$) {
+    my ($exitcode, $message) = @_;
+    $exitcode = 1 unless defined $exitcode;
+
+    print STDERR $message, "\n" if defined $message;
+    print STDERR "cf [options] command [command-options] [arg ..]\n";
+    print STDERR "  run 'cf man' for detailed help\n";
+    exit($exitcode);
+}
+
+#----------------------------------------
 # Parse command line.
 
+Getopt::Long::Configure("require_order");
+
+# parse main cf options (valid across all commands)
+
+my $help = 0;
+my %flags = ();		# Major Cf modal flags
+GetOptions(
+	'inform|I!' => \$flags{INFORM},
+	'dry-run|recon|test|n!' => \$flags{DRYRUN},
+	'debug|d!' => \$flags{DEBUG},
+
+	'help|?' => \$help,
+	) or usage();
+usage(0) if $help;
 my $cmd = shift(@ARGV);
+
+if ($cmd eq 'init-shell') {
+    # shell script will be trying to source the value of stdout, so make
+    # sure there is no logging noise to stdout.
+    foreach my $key ('INFORM', 'DEBUG') {
+	$flags{$key} = 0;
+	if (defined $ENV{CF_FLAGS}) {
+	    $ENV{CF_FLAGS} =~ s/:$key(=\w*)?:/:/;
+	}
+    }
+}
+my @flaglist = ();
+foreach my $key (keys(%flags)) {
+    if (defined($flags{$key})) {
+	push(@flaglist, "$key=$flags{$key}");
+    }
+}
+if (@flaglist) {
+    # !!! is all this effor to delay loading Config::Cf necessary?
+    require Config::Cf;	
+    Config::Cf::SetFlags(@flaglist);
+}
+
+# Get cf command
+
 if (defined $commands{$cmd}) {
     # core script command - continue on
 } elsif (defined $simple_cmds{$cmd}) {
@@ -42,33 +95,29 @@ if (defined $commands{$cmd}) {
     # Invoke another configuration module
     my $module = $1;
     my $function = $2;
-    my $cfbase = $ENV{CF_BASEDIR} || dirname($0)."/..";
-    exec("$cfbase/$module/configure", $function, @ARGV) or die $!;
+
+    call_module($module, $function, @ARGV);
+    exit();
 } else {
-    pod2usage("$0: bad command: $cmd") unless defined $commands{$cmd};
+    usage(1, "$0: bad command: $cmd");
 }
 
-my $help = 0;
+# Get command options.
+
 my %opts = ();		# Options for config operation
-my %flags = ();		# Major Cf modal flags
-my $checktype;
-Getopt::Long::Configure("require_order");
+my $checktype;		# Inverse of CHANGE_TYPE option - --checktype seems
+			# more natural than --nochangetype
 GetOptions(
 	'user|owner|u=s' => \$opts{OWNER},
 	'group|g=s' => \$opts{GROUP},
 	'mode|m=s' => \$opts{MODE},
 	'changetype|t' => \$opts{CHANGE_TYPES},
 	'recurse|r=i' => \$opts{RECURSE},
+	'skipmissing!' => \$opts{SKIP_MISSING},
+	'purge|delete|d' => \$opts{PURGE},
 
 	'checktype!' => \$checktype,
-
-	'inform|I!' => \$flags{INFORM},
-	'dry-run|recon|test|n!' => \$flags{DRYRUN},
-	'debug|d!' => \$flags{DEBUG},
-
-	'help|?' => \$help,
-	) or pod2usage(2);
-pod2usage(1) if $help;
+	) or usage();
 
 $opts{CHANGE_TYPES} = !$checktype if defined $checktype;
 if ( $opts{MODE} =~ /^[1-9]/ ) {
@@ -82,19 +131,7 @@ foreach my $key (keys(%opts)) {
 }
 
 # Load the config module now.
-
-require Config::Cf;
-
-# Set mode flags
-
-my @flaglist = ();
-foreach my $key (keys(%flags)) {
-    if (defined($flags{$key})) {
-	$key = "!$key" if ($flags{$key} == 0);
-	push(@flaglist, $key);
-    }
-}
-Config::Cf::SetFlags(@flaglist);
+require Config::Cf;	
 
 # Invoke command
 
@@ -102,21 +139,60 @@ $commands{$cmd}->();
 exit(0);
 
 
-sub get_session() {
-    return $ENV{CF_SESSION} if (defined $ENV{CF_SESSION});
-    my $cfvar = ($UID == 0) ? '/var/lib/cf' : "$ENV{HOME}/.cf";
-    my $session = "$cfvar/session/$PID";
-    WriteFile("$session/changes", "0");
-    return $session;
-}
+# Get count of config changes so far (or since prior invocation)
 
 sub do_changes() {
-    pod2usage("wrong number of arguments (need 1 or less)") if (@ARGV > 1);
+    usage("changes needs 1 or arguments") if (@ARGV > 1);
     my $initial = (@ARGV == 1) ? $ARGV[0] : 0;
 
-    my $session = get_session();
-    my $changes = ReadFile("$session/changes");
+    die "no configuration session\n" unless (defined $ENV{CF_SESSION});
+    my $session = $ENV{CF_SESSION};
+
+    my $fh;
+    open($fh, "<$session/changes") or die "can't open changes: $!\n";
+    my $changes = <$fh>;
+    close($fh) or die $!;
+
     print $changes-$initial, "\n";
+}
+
+sub call_module($$@) {
+    my ($module, $function, @args) = @_;
+    
+    my $base = $ENV{CF_BASEDIR};
+    if (not defined $base) {
+	# Initialize environment for cross-script configuration
+	$base = dirname($0)."/.."; # !!! better way to compute? (and in BEGIN)
+	$ENV{CF_BASEDIR} = $base ;
+	# !!! this PATH is not ms-windows portable
+	$ENV{PATH} = "$base/bin:/usr/bin:/bin:/usr/sbin:/sbin" ;
+	$ENV{PERL5LIB} = "$base/bin";
+    }
+
+    my $modscript = "$base/$module/configure";
+    die "unknown module: $module\n" unless -x $modscript;
+    system($modscript, $function, @args) == 0
+	    or die "$module:$function failed\n";
+}
+
+sub do_require() {
+    die "no configuration session\n" unless (defined $ENV{CF_SESSION});
+    my $session = $ENV{CF_SESSION};
+
+    my $flagdir = "$session/configured";
+    if (! -d $flagdir) {
+	mkdir($flagdir) or die "can't create $flagdir: $!\n";
+    }
+
+    foreach my $module (@ARGV) {
+	my $flag = "$flagdir/$module";
+	unless (-f $flag) {
+	    call_module($module, "configure");
+	    my $fh;
+	    open($fh, ">$flag") or die "can't open $flag: $!\n";
+	    close($fh) or die $!;
+	}
+    }
 }
 
 sub do_file() {
@@ -136,7 +212,7 @@ sub do_fix() {
 }
 
 sub do_copy() {
-    pod2usage("wrong number of arguments (need 2)") if (@ARGV != 2);
+    usage(1, "copy needs 2 arguments, not ".scalar(@ARGV)) if (@ARGV != 2);
     Config::Cf::FileSync(@ARGV, %opts);
 }
 
@@ -147,7 +223,7 @@ sub do_directory() {
 }
 
 sub do_link() {
-    pod2usage("wrong number of arguments (need 2)") if (@ARGV != 2);
+    usage(1, "link needs 2 arguments") if (@ARGV != 2);
     Config::Cf::MakeLink(@ARGV, %opts);
 }
 
@@ -163,7 +239,13 @@ sample - Using cf
 
 =head1 SYNOPSIS
 
-cf I<cf-command> [I<options>] [I<arg> ..]
+cf [I<options>] I<cf-command> [I<comand-options>] [I<arg> ..]
+
+ Options:
+    --debug
+    --inform
+    --test
+    --help
 
  Commands:
    copy src .. dest	Copy src file(s) to dest
@@ -172,20 +254,19 @@ cf I<cf-command> [I<options>] [I<arg> ..]
    fix path ..		Fix file attributes
    link src dest	Link dest to src
    man			Display manual page
+   module:function arg ..
+   require module ..
    run cmd arg ..	Execute external command
 
- Options:
+ Command Options:
     --changetype
     --checktype
     --group group
     --mode permission
+    --purge
     --recurse depth
+    --skipmissing
     --user user
 
-    --debug
-    --inform
-    --test
-
-    --help
 
 =cut
