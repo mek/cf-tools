@@ -1049,6 +1049,10 @@ sub RealMakeDir(@) {
 
 sub ReadFile {
     my ($filename) = @_;
+    if (!$update) {
+	my $fakepath = GetFake($filename);
+	$filename = $fakepath if (-f $fakepath);
+    }
     open(FILE, "<$filename") or die "can't open $filename: $!";
     my $contents = join('', <FILE>) ;
     close FILE;
@@ -1979,6 +1983,13 @@ sub TouchFile($%) {
     }
 }
 
+# Get path for storing dry-run contents of file.
+
+sub GetFake($) {
+    my ($path) = @_;
+    return GetSession()."/fake".AbsolutePath($path);
+}
+
 # Create/replace $filename with data in $content - appends a newline.
 
 sub WriteFile {
@@ -1993,7 +2004,10 @@ sub WriteFile {
     }
 
     MarkChange("writing $destpath");
-    return unless ($update);
+    if (!$update) {
+	RealWriteFile(GetFake($destpath),$content);
+	return
+    }
 
     # Make sure parent directories of $destpath exist
     my $parent = dirname($destpath);
