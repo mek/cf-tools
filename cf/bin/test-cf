@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 49;
+use Test::More tests => 51;
 use English;
 use File::Temp;
 use File::stat;
@@ -307,5 +307,20 @@ ok(Cf::IsExcluded( [
 
     # Cleanup
     Cf::RealRemoveTree($dir);
+}
+
+# get_uname()
+
+{
+    my $un;
+    if ($^O eq 'cygwin') {
+	$un = 'CYGWIN';
+    } else {
+	$un = `uname`;
+	chomp($un);
+    }
+    
+    is(get_uname(), $un, "get_uname()");
+    is($ENV{CF_UNAME}, $un, "get_uname() - environ");
 }
 

@@ -608,7 +608,7 @@ sub LoadPerlMod($) {
     my ($script) = @_;
     my $dir = AbsolutePath(dirname($script));
     my $name = basename($dir);
-    my $host = Cf::GetHost();
+    my $host = Cf::get_host();
 
     my $package = "Cf::Module::$name";
     my $module = new Cf::ModuleWrap($name, $package);
@@ -660,7 +660,7 @@ sub all {
     # Make sure we have a session.
     GetSession();
 
-    my $host = GetHost();
+    my $host = get_host();
     # !!! don't like this location for all services - invading the otherwise
     # independent cf service
     my $svfile = GetBase() . "/cf/PERHOST/$host/services";
@@ -2776,7 +2776,7 @@ push(@EXPORT, '&read_command');
 # within a domain)
 
 my $short_host;
-sub GetHost() {
+sub get_host() {
     if (! defined $short_host) {
 	require Sys::Hostname;
 	$short_host = Sys::Hostname::hostname();
@@ -2784,6 +2784,24 @@ sub GetHost() {
     }
     return $short_host;
 }
+push(@EXPORT, '&get_host');
+string_op('get_host');
+
+# Get uname (unix-type)
+
+my $uname = $ENV{CF_UNAME};
+sub get_uname() {
+    if (! defined $uname) {
+	$uname = `uname`;
+	chomp($uname);
+	$uname = 'CYGWIN' if ($uname =~ /^CYGWIN_/);
+
+	$ENV{CF_UNAME} = $uname;
+    }
+    return $uname;
+}
+push(@EXPORT, '&get_uname');
+string_op('get_uname');
 
 # Determine base of configuration script/module tree
 
@@ -2801,7 +2819,8 @@ sub GetSession() {
     # process id if we want to keep info around for historical info...
     my $sid = $PID;
     my $session = "$vardir/session/$sid";
-    my $host = GetHost();
+    my $host = get_host();
+    my $uname = get_uname();
 
     Undo("debug", "starting session $sid");
 
@@ -2818,6 +2837,7 @@ sub GetSession() {
     # what exactly are it's duties:
     # *
     RealWriteFile("$session/init.sh", <<EOF );
+CF_UNAME="$uname"; export CF_UNAME
 CF_SESSION="$session"; export CF_SESSION
 cf_svcdir=`dirname \$0`
 case \$cf_svcdir in
