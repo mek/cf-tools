@@ -1,0 +1,47 @@
+#!/bin/sh
+
+while true
+do
+    case $1 in
+    --mode) shift; args="$args mode=$1"; shift ;;
+    --) shift; break ;;
+    -*) echo "bad option: $1"; exit 1 ;;
+    *) break ;;
+    esac
+done
+
+tmp=/tmp/tcf
+
+header()
+{
+cat >$tmp <<EOF
+control:
+    actionsequence = ( $1 )
+$1:
+EOF
+}
+
+op=$1; shift
+case $op in
+copy)
+    header $op
+    echo " $1 dest=$2 $args" >>$tmp
+    ;;
+
+directories)
+cat >$tmp <<EOF
+control:
+    actionsequence = ( directories )
+directories:
+EOF
+    for f in $*
+    do
+	echo " $f $args" >>$tmp
+    done
+    ;;
+*)
+    echo "bad operation: $op"; exit 1
+    ;;
+esac
+
+cfagent -f $tmp
