@@ -1469,8 +1469,12 @@ sub MoveTemp($$%) {
     CheckFile($tmp, %opts, RECURSE=>0);
     $flags{INFORM} = $inform;
 
-    if (IsMount($target) ) {
+    my $umount_tries = 0;
+    while (IsMount($target) ) {
 	die "can't replace mount point: $target\n" unless ($opts{UMOUNT});
+	if ($umount_tries++ == 4) {
+	    die "too many mounts on $target\n";
+	}
 	run('umount', $target);
     }
 
