@@ -2115,7 +2115,7 @@ foreach my $byte (0 .. 255) {
 }
 sub Encode($) {
     my ($str) = @_;
-    $str =~ s/[^[:alnum:]-_\/\.]/%$char2hex{$&}/g;
+    $str =~ s/[^\w-\/\.]/%$char2hex{$&}/g;
     return $str;
 }
 sub Decode($) {
@@ -2904,6 +2904,14 @@ sub file {
     }
 }
 push(@EXPORT, '&file');
+
+sub touch {
+    my ($optref, @files) = get_options(\%parse_opt, @_);
+    foreach my $path (@files) {
+	TouchFile($path, %{$optref}) unless $optref->{SKIP_MISSING};
+    }
+}
+push(@EXPORT, '&touch');
 
 sub fix {
     my ($optref, @paths) = get_options(\%parse_opt, @_);
