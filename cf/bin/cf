@@ -98,7 +98,6 @@ my $is_win = ($^O eq 'MSWin32' || $^O eq 'cygwin');
 # to be too thorough.
 
 my $is_root = $is_win ? ($ENV{USERNAME} eq "Administrator") : ($UID == 0);
-$is_win = 0;
 
 # Where to store our state files.
 
