@@ -329,22 +329,32 @@ push(@EXPORT, '&parse_args');
 # Define result types for exported function - so that we can return results to
 # command line scripts.
 
-# !!! should these go into a module variable - that way modules don't need to
-# know their own name. Or just define their name ... that may be simpler.
-
 my %op_results = ();
+
 sub OpResult($) {
     my ($opname) = @_;
     return $op_results{$opname};
 }
+
+sub SetOpResult($$$) {
+    my ($module, $opname, $type) = @_;
+    if ($module =~ /^Cf::Module::(.*)/) {
+	$opname = "$1:$opname";
+    }
+    $op_results{$opname} = $type;
+}
+
 sub string_op($) {
     my ($opname) = @_;
-    $op_results{$opname} = 'string';
+    SetOpResult(caller(), $opname, 'string');
 }
+push(@EXPORT, '&string_op');
+
 sub boolean_op($) {
     my ($opname) = @_;
-    $op_results{$opname} = 'boolean';
+    SetOpResult(caller(), $opname, 'boolean');
 }
+push(@EXPORT, '&boolean_op');
 
 # Update modal flags - each arguments if a mode flag optionally followed
 # with "=" and a value. If no value is provided sets the flag to 1.
