@@ -257,6 +257,8 @@ my %parse_opt = (
     SLOPPY_DAEMON => '',
 
     TEMPDIR => \&parse_string,
+
+    UMOUNT => '',
 );
 
 # Usage: get_options parser-hashref arg ..
@@ -1159,6 +1161,11 @@ sub getmount {
 push(@EXPORT, '&getmount');
 string_op('getmount');
 
+sub IsMount($) {
+    my ($path) = @_;
+    return (!-l $path && (getmount($path) ne getmount("$path/..")));
+}
+
 # Get temporary path where we can prep a file before renaming it atomically
 # to the specified destination
 
@@ -1461,6 +1468,11 @@ sub MoveTemp($$%) {
     $flags{INFORM} = 0;
     CheckFile($tmp, %opts, RECURSE=>0);
     $flags{INFORM} = $inform;
+
+    if (IsMount($target) ) {
+	die "can't replace mount point: $target\n" unless ($opts{UMOUNT});
+	run('umount', $target);
+    }
 
     Backup($target, %opts);
     my $old;

@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 58;
+use Test::More tests => 61;
 use English;
 use File::Temp;
 use File::stat;
@@ -359,3 +359,22 @@ ok(Cf::IsExcluded( [
     unlink($src);
 }
 
+# IsMount()
+
+{
+    my $dir = "$tmpdir/dir";
+    `mkdir $dir`;
+
+    ok(!Cf::IsMount($dir), "IsMount(), temp dir");
+
+    SKIP: {
+	skip "no /proc", 2 unless -d "/proc";
+
+	ok(Cf::IsMount("/proc"), "IsMount(), /proc");
+
+	`ln -s /proc/1 $dir/l`;
+	ok(!Cf::IsMount("$dir/l"), "IsMount(), link to other filesystem");
+    }
+
+    Cf::RealRemoveTree($dir);
+}
