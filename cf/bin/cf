@@ -599,6 +599,11 @@ sub GetModule($) {
     $modules{$modname} = $module;
     return $module;
 }
+sub get_module {
+    my ($o, $name) = get_options({}, @_);
+    return GetModule($name);
+}
+push(@EXPORT, '&get_module');
 
 sub testmod {
     my ($optref, @modules) = get_options({}, @_);
