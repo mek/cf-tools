@@ -2053,15 +2053,20 @@ sub CopyFile {
     my $parent = dirname($destpath);
     MakeDir($parent);
 
-    # Safe copy (copy to temp and then move into place)
+    if ($opts{REMOTE_DEST}) {
+	# Copying to remote location.
+	SendPut($opts{REMOTE_DEST}, $destpath, RawReadFile($srcpath));
+	return;
+    }
 
+    # Destination is local
+
+    # Safe copy (copy to temp and then move into place)
     my $temp = TempName($destpath, %opts);
 
     eval {
 	if ($opts{REMOTE_SRC}) {
 	    Geturl($srcpath, $temp);
-	} elsif ($opts{REMOTE_DEST}) {
-	    SendCommand($opts{REMOTE_DEST}, 'PUT', RawReadFile($srcpath));
 	} else {
 	    File::Copy::copy($srcpath, $temp)
 		or die "can't copy from $srcpath: $!\n";
@@ -2079,7 +2084,8 @@ sub CopyFile {
 
     # verify copy - always verify size, optionally validate content.
     my $ti = GetFileInfo($temp);
-    die "size changed during copy of $srcpath" unless $ti->size == $si->size;
+    die "size changed during copy of $srcpath"
+	    unless $ti->size == $si->size;
     if ($verify ne 'NONE') {
 	# verify content
 	my $same;
@@ -2528,6 +2534,8 @@ sub LoadTreeTOC($) {
     my $toc = Geturl("$url.toc");
     LoadTOC($url, $toc, 1);
 }
+
+# !!! purge TOC entries from info cache once sync is complete?
 
 sub LoadTOC($$$) {
     my ($url, $toc, $recursive) = @_;
@@ -2995,7 +3003,14 @@ sub syncserver {
 push(@EXPORT, '&syncserver');
 
 sub Sync_TOC {
-    my $toc = MakeTOC($server_root, \%server_fields, 0);
+    my ($relpath) = @_;
+    my $path = $server_root;
+
+    if (length($relpath)) {
+	SyncCheckPath($relpath);
+	$path .= "/$relpath";
+    }
+    my $toc = MakeTOC($path, \%server_fields, 0);
     return("OK", $toc);
 }
 
@@ -3043,15 +3058,17 @@ sub Sync_PUT {
     return("OK");
 }
 
-sub SendCommand($$@) {
-    my ($handles, $cmd, @args) = @_;
-    my ($rfh, $wfh) = @{$handles};
+sub SendPut($$$) {
+    my ($handles, $url, $content) = @_;
 
-    my $upblob;
-    if ($cmd eq "PUT") {
-	$upblob = $args[0];
-	$args[0] = length($upblob);
-    }
+    my ($relpath) = ($url =~ m{^scf://[^/]*/(.*)})
+	    or die "bad put target: $url\n";
+    SendCommand($handles, 'PUT', $content, $relpath, length($content));
+}
+
+sub SendCommand($$@) {
+    my ($handles, $cmd, $upblob, @args) = @_;
+    my ($rfh, $wfh) = @{$handles};
 
     my @encargs = ();
     foreach my $arg (@args) {
@@ -3094,7 +3111,8 @@ sub push {
 
     # parse dest url
     my @opts = ();
-    my ($user, $x, $server) = ($destdir =~ m{^scf://((\w)*@)?([\w\.\-]*)/})
+    my ($user, $x, $server, $destpath) =
+	    ($destdir =~ m{^scf://((\w)*@)?([\w\.\-]*)/(.*)})
 	    or die "bad push target: $destdir\n";
     push(@opts, '-l', $user) if $user;
 
@@ -3109,7 +3127,7 @@ sub push {
     my $handles = [$rfh, $wfh];
 
     # Load TOC from server
-    my $toc = SendCommand($handles, 'TOC');
+    my $toc = SendCommand($handles, 'TOC', undef, $destpath);
     debug("got toc: $toc");
     LoadTOC($destdir, $toc, 1);
 
