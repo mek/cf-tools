@@ -122,6 +122,7 @@ is($changes, changes(), "makelink(), convergence");
     copy(-mode => 755, $src, $dest);
     is(sprintf("%04o", stat($dest)->mode & 07777), "0755", "copy(), MODE");
 
+    unlink($src, $dest);
     `echo hi >$src`;
     `echo hi >$dest`;
     my $changes = Cf::ChangeCount();
