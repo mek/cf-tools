@@ -937,11 +937,16 @@ sub FlushRegistry($) {
 #----------------------------------------------------------------------
 # Logging
 
-# Define whether we are logging to the system log (and how).
 
 my $logging = '0';
 my $logtype = 'none';
 my $logfh;
+
+# logfile used then logtype is "file"
+my $logfile = "$vardir/log";
+
+# Define whether we are logging to the system log (and how).
+
 sub SetLogging($) {
     my ($newlog) = @_;
 
@@ -1039,6 +1044,18 @@ sub Log ($$$@)
 
     print($fh ":$file_level:$message\n");
 }
+
+sub showlog {
+    die "can't display log for type=$logtype\n" unless $logtype eq 'file';
+    open(FILE, "<$logfile") or die "can't open $logfile\n";
+    while (my $line = <FILE>) {
+	my ($tstamp, $rest) = split(' ', $line, 2);
+	my $timestr = localtime($tstamp);
+	print "[$timestr] $rest";
+    }
+    close(FILE) or die $!;
+}
+push(@EXPORT, '&showlog');
 
 sub Error {
     Log(*STDERR, 'error', 'err', @_);
