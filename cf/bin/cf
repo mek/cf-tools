@@ -25,13 +25,10 @@
 # Something to ensure we get the correct perl? PATH reset in call_module()
 # could remove the current (preferred) PERL.
 #
-# Track changes in DRYRUN mode so that later file comparisons are made
-# correctly.
+# Complete tracking  changes in DRYRUN mode so that later file comparisons
+# are made correctly.
 #
 # Consistent path manipulation
-#
-# Add timeout option to run - see perlipc and search for alarm - or use code
-# from old start script.
 #
 # Implement undo from log
 #
@@ -241,6 +238,7 @@ my %parse_opt = (
     },
     FIELD => 'TOC_FIELD',
 
+    TIMEOUT => \&parse_int,
 );
 
 # Usage: get_options parser-hashref arg ..
@@ -1624,8 +1622,8 @@ sub GetFileInfo($) {
 }
 
 sub fileinfo {
-    my ($o, $path) = get_options({'FOLLOW'=>''}, @_);
-    $path = FollowLinks($path) if $o->{FOLLOW};
+    my ($o, $path) = get_options(\%parse_opt, @_);
+    $path = FollowLinks($path) if $o->{FOLLOW_LINKS};
     return GetFileInfo($path);
 }
 push(@EXPORT, '&fileinfo');
@@ -2703,10 +2701,11 @@ sub BecomeUser($) {
 
 # Run command as specified user. Throws exception if command fails.
 
-sub RunAsUser($@) {
-    my ($user, @args) = @_;
+sub run {
+    my ($optref, @args) = get_options(\%parse_opt, @_);
+    my $user = $optref->{OWNER};
+    my $timeout = $optref->{TIMEOUT} || 0;
     my $cmd = join(' ', @args);
-    my $timeout = 0;
 
     my $msg = "running";
     $msg += "as $user" if length($user);
@@ -2744,28 +2743,7 @@ sub RunAsUser($@) {
 	exec(@args) or die "cant exec: $!";
     }
 }
-
-# Run specified command and throw error if it fails (returns non-zero status
-# code). This is for commands with side effects - it won't actually be run
-# if we are in no update mode.
-
-sub Run(@) {
-    my $cmd = join(' ', @_);
-
-    MarkChange("running: $cmd");
-    return unless ($update);
-
-    PreSpawn();
-    my $pid = open3(*INPIPE, *PIPE, '', $cmd);
-    while (my $line = <PIPE>) {
-	chomp($line);
-	Info($line) if ($line =~ /\S/);
-    }
-    close(PIPE) or die $!;
-    close(INPIPE) or die $!;
-    waitpid($pid, 0);
-    die "run failed ($?): $cmd\n" if $?;
-}
+push(@EXPORT, '&run');
 
 # Run command and return the output. Throw error if it fails. This command
 # should not have any side effects as it WILL be run in no-update mode.
@@ -2927,12 +2905,14 @@ push(@EXPORT, '&fix');
 
 sub copy {
     my ($optref, $src, $dest) = get_options(\%parse_opt, @_);
+    $dest = FollowLinks($dest) if $optref->{FOLLOW_LINKS};
     FileSync($src, $dest, %{$optref});
 }
 push(@EXPORT, '&copy');
 
 sub rcopy {
     my ($optref, $src, $dest) = get_options(\%parse_opt, @_);
+    $dest = FollowLinks($dest) if $optref->{FOLLOW_LINKS};
     RemoteSync($src, $dest, %{$optref});
 }
 push(@EXPORT, '&rcopy');
@@ -2972,12 +2952,6 @@ sub tidy {
     }
 }
 push(@EXPORT, '&tidy');
-
-sub run {
-    my ($optref, @args) = get_options(\%parse_opt, @_);
-    RunAsUser($optref->{OWNER}, @args);
-}
-push(@EXPORT, '&run');
 
 sub writefile {
     my ($optref, $path, $content) = get_options(\%parse_opt, @_);
