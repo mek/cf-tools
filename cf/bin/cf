@@ -2792,6 +2792,7 @@ push(@EXPORT, '&read_command');
 
 my %server_fields = ();
 my $server_root = "$ENV{HOME}/cfsync";
+my $server_writedir = "upload";
 
 sub syncserver {
     while (my $line = <STDIN>) {
@@ -2847,6 +2848,27 @@ sub Sync_GET {
     close FILE;
 
     return("OK", $contents);
+}
+
+sub Sync_PUT {
+    my ($relpath, $size) = @_;
+
+    SyncCheckPath($relpath);
+    die "illegal (write) path: $relpath"
+	    unless $relpath =~ "^$server_writedir/";
+    my $path = "$server_root/$relpath";
+
+    my $content;
+    my $actual = read(STDIN, $content, $size);
+    die "only received $actual bytes (expected $size)\n" if $actual != $size;
+
+    RealMakeDir(dirname($path));
+    open(FILE, ">$path") or die "can't write to $path: $!\n";
+    binmode(FILE);
+    print(FILE $content) or die $!;
+    close FILE;
+
+    return("OK");
 }
 
 # Get short hostname of this machines.
