@@ -12,6 +12,11 @@
 # correctly.
 #
 # Consistent path manipulation
+#
+# Add timeout option to run - see perlipc and search for alarm - or use code
+# from old start script.
+#
+# Implement undo from log
 
 
 use strict;
@@ -156,6 +161,8 @@ my %parse_opt = (
     PURGE => '',
     DELETE => "PURGE",
     D => "PURGE",
+    PURGE_EXCLUDED => "PURGE=EXCLUDED",
+    DELETE_EXCLUDED => "PURGE=EXCLUDED",
 
     RMDIR => '',
 
@@ -232,6 +239,11 @@ sub get_options($@) {
 		$opts{$1} = 0;
 		next;
 	    }
+	    if ($parser =~ /^(\w*)=(.*)/) {
+		# Option alias with implied value
+		$opts{$1} = $2;
+		next;
+	    }
 
 	    if ($parser ne '') {
 		# Option is an alias - get parser from real option
@@ -252,6 +264,42 @@ sub get_options($@) {
     return (\%opts, @_);
 }
 push(@EXPORT, '&get_options');
+
+# Parse command line options.
+
+my %global_opts = (
+    INFORM => '',
+    I => 'INFORM',
+
+    DRYRUN => '',
+    N => 'DRYRUN',
+    DRY_RUN => 'DRYRUN',
+    RECON => 'DRYRUN',
+    TEST => 'DRYRUN',
+    
+    DEBUG => '',
+    D => 'DEBUG',
+    
+    SPLAY => \&parse_int,
+
+    LOG => \&parse_string,
+);
+sub parse_args(@) {
+    my ($optref, @args) = get_options(\%global_opts, @ARGV);
+
+    if ($optref->{SPLAY}) {
+	# Introduce random delay up to $splay minutes - generally used to keep
+	# all machines from hitting the cfmaster at the same time.
+	sleep(rand($optref->{SPLAY}*60));
+    }
+    delete $optref->{SPLAY};
+
+    # Remaining options are modal flags.
+    Cf::SetFlagsFromHash(%{$optref});
+
+    return @args;
+}
+push(@EXPORT, '&parse_args');
 
 # Define result types for exported function - so that we can return results to
 # command line scripts.
@@ -466,8 +514,10 @@ sub GetModule($) {
     my $base = GetBase();
     my $module;
     if (-f "$base/$modname/configure.pl") {
+	Debug("load (perl) cf module $modname");
 	$module = LoadPerlMod("$base/$modname/configure.pl");
     } elsif (-x "$base/$modname/configure") {
+	Debug("load (script) cf module $modname");
 	$module = new Cf::ScriptModule($modname, "$base/$modname/configure");
     } else {
 	die "unknown module: $modname (base=$base)\n";
@@ -475,6 +525,23 @@ sub GetModule($) {
     $modules{$modname} = $module;
     return $module;
 }
+
+sub testmod {
+    my ($optref, @modules) = get_options({}, @_);
+    my $base = GetBase();
+    if (scalar(@modules) == 0) {
+	foreach my $script (
+		glob("$base/*/configure.pl"),
+		glob("$base/*/configure"),
+		) {
+	    push(@modules, basename(dirname($script)));
+	}
+    }
+    foreach my $mod (@modules) {
+	GetModule($mod);
+    }
+}
+push(@EXPORT, '&testmod');
 
 sub CallModule($$@) {
     my ($modname, $function, @args) = @_;
@@ -777,6 +844,7 @@ sub FlushRegistry($) {
 
 my $logging = '0';
 my $logtype = 'none';
+my $logfh;
 sub SetLogging($) {
     my ($newlog) = @_;
 
@@ -794,6 +862,12 @@ sub SetLogging($) {
 	Sys::Syslog::setlogsock('unix');
 	openlog(basename($0), 'pid', $facility);
 	$logtype = 'syslog';
+
+	# Close file log.
+	if (defined $logfh) {
+	    close($logfh);
+	    $logfh = undef;
+	}
     } else {
 	closelog() if $logtype eq 'syslog';
 
@@ -811,7 +885,6 @@ sub SetLogging($) {
 
 # Log a message
 
-my $logfh;
 sub Log ($$$@)
 {
     my ($fh, $file_level, $priority, @msgs) = @_;
@@ -976,7 +1049,7 @@ sub TieFile(\%$) {
 
     RealMakeDir(dirname($path));
     my $lock = "$path.lock";
-    my $lockfh;
+    my $lockfh = new IO::File;
     open ($lockfh, ">>$lock") or die "can't open $lock: $!\n";
     flock($lockfh, LOCK_EX) or die "can't lock $lock $!\n";
     tie(%{$mapref}, 'AnyDBM_File', $path, O_CREAT|O_RDWR, 0644)
@@ -1456,14 +1529,14 @@ sub GetFileInfo($) {
 
     return $file_info{$path} if (defined $file_info{$path});
     my $info = new FileInfo;
-    my @st = stat($path);
+    my @st = lstat($path);
     if (!@st) {
 	$info->type('NONE');
 	return $info
     }
 
     my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
-	  $atime,$mtime,$ctime,$blksize,$blocks) = lstat($path);
+	  $atime,$mtime,$ctime,$blksize,$blocks) = @st;
 
     $info->dev($dev);
     $info->ino($ino);
@@ -1593,7 +1666,15 @@ Also obeys the following options when checking
 sub CheckFile($%) {
     my ($path, %opts) = @_;
     my $fi = GetFileInfo($path);
-    my $is_link = ($fi->type eq 'LINK');
+
+    if ($fi->type eq 'LINK') {
+	# Nothing to do if not traversing links (we don't check perms on
+	# (soft) links as they don't matter)
+	return if !$opts{FOLLOW_LINKS};
+
+	$path = FollowLinks($path);
+	$fi = GetFileInfo($path);
+    }
 
     if ($fi->type eq 'NONE') {
 	# File does not exist
@@ -1604,93 +1685,90 @@ sub CheckFile($%) {
 	die "file does not exist: $path";
     }
 
-    return if ($is_link && !$opts{'FOLLOW_LINKS'});
     Debug("checking $path");
 
-    if (!$is_link) {
-	if (defined $opts{'OWNER'}) {
-	    # check owner of file
+    if (defined $opts{'OWNER'}) {
+	# check owner of file
 
-	    my $user = $opts{'OWNER'};
-	    my $uid;
+	my $user = $opts{'OWNER'};
+	my $uid;
 
-	    if ( $user =~ /^[0-9]+$/ ) {
-		# User specified as uid.
+	if ( $user =~ /^[0-9]+$/ ) {
+	    # User specified as uid.
 
-		$uid = $user;
-	    } else {
-		# Assume user specified by name - look up id.
-		# Lookup allowed to fail in nonupdate mode - assume that user
-		# would have been created in an earlier step.
+	    $uid = $user;
+	} else {
+	    # Assume user specified by name - look up id.
+	    # Lookup allowed to fail in nonupdate mode - assume that user
+	    # would have been created in an earlier step.
 
-		my @fields = getpwnam($user);
-		die "user $user unknown" unless (@fields || (!$update));
-		$uid = $fields[2];
-	    }
-	    Debug("checking $path owner is $user ($uid), old is " . $fi->uid);
-	    if ($uid != $fi->uid) {
-		MarkChange("setting owner of $path to $user");
-		if ($update) {
-		    chown($uid, -1, $path) or die $!;
-		    $fi = GetFileInfo($path);
-		}
+	    my @fields = getpwnam($user);
+	    die "user $user unknown" unless (@fields || (!$update));
+	    $uid = $fields[2];
+	}
+	Debug("checking $path owner is $user ($uid), old is " . $fi->uid);
+	if ($uid != $fi->uid) {
+	    MarkChange("setting owner of $path to $user");
+	    if ($update) {
+		chown($uid, -1, $path) or die $!;
+		$fi = GetFileInfo($path);
 	    }
 	}
-	if (defined $opts{'GROUP'}) {
-	    # check group of file
+    }
+    if (defined $opts{'GROUP'}) {
+	# check group of file
 
-	    my $group = $opts{'GROUP'};
-	    my $gid;
+	my $group = $opts{'GROUP'};
+	my $gid;
 
-	    if ( $group =~ /^[0-9]+$/ ) {
-		# User specified as gid.
+	if ( $group =~ /^[0-9]+$/ ) {
+	    # User specified as gid.
 
-		$gid = $group;
-	    } else {
-		# Assume group specified by name - look up id.
-		# Lookup allowed to fail in nonupdate mode - assume group
-		# would have been created in an earlier step.
+	    $gid = $group;
+	} else {
+	    # Assume group specified by name - look up id.
+	    # Lookup allowed to fail in nonupdate mode - assume group
+	    # would have been created in an earlier step.
 
-		my @fields = getgrnam($group);
-		die "group $group unknown" unless (@fields or (!$update));
-		$gid = $fields[2];
-	    }
-	    Debug("checking $path group is $group ($gid), old is " . $fi->gid);
-	    if ($gid != $fi->gid) {
-		MarkChange("setting group of $path to $group");
-		if ($update) {
-		    chown(-1, $gid, $path) or die $!;
-		    $fi = GetFileInfo($path);
-		}
+	    my @fields = getgrnam($group);
+	    die "group $group unknown" unless (@fields or (!$update));
+	    $gid = $fields[2];
+	}
+	Debug("checking $path group is $group ($gid), old is " . $fi->gid);
+	if ($gid != $fi->gid) {
+	    MarkChange("setting group of $path to $group");
+	    if ($update) {
+		chown(-1, $gid, $path) or die $!;
+		$fi = GetFileInfo($path);
 	    }
 	}
-	#!!! collapse the two chown() calls into one if possible?
+    }
+    #!!! collapse the two chown() calls into one if possible?
 
-	if (defined $opts{'MODE'}) {
-	    # check mode (permissions) of file
+    if (defined $opts{'MODE'}) {
+	# check mode (permissions) of file
 
-	    my $mode = $opts{'MODE'};
-	    if ($mode =~ /^\d/) {
-		# Numeric mode. Convert from octal if it has a leading 0.
-		$mode = oct($mode) if $mode =~ /^0/;
-	    } else {
-		# Symbolic mode.
-		require File::chmod;
+	my $mode = $opts{'MODE'};
+	if ($mode =~ /^\d/) {
+	    # Numeric mode. Convert from octal if it has a leading 0.
+	    $mode = oct($mode) if $mode =~ /^0/;
+	} else {
+	    # Symbolic mode.
+	    require File::chmod;
 
-		# If DEBUG is on then includes bogus permission validation - so
-		# disable (on by default)
-		$File::chmod::DEBUG = 0;
-		$File::chmod::UMASK = 0;
+	    # If DEBUG is on then includes bogus permission validation - so
+	    # disable (on by default)
+	    $File::chmod::DEBUG = 0;
+	    $File::chmod::UMASK = 0;
 
-		($mode) = File::chmod::getchmod($mode, $path);
-	    }
-	    my $mode_str = sprintf("%04o", $mode);
-	    Debug("checking $path mode is $mode_str");
-	    if ($mode != ($fi->perm) ) {
-		MarkChange("setting mode of $path to $mode_str");
-		if ($update) {
-		    chmod($mode, $path) or die $!;
-		}
+	    ($mode) = File::chmod::getchmod($mode, $path);
+	}
+	my $mode_str = sprintf("%04o", $mode);
+	Debug("checking $path mode is $mode_str");
+	if ($mode != ($fi->perm) ) {
+	    MarkChange("setting mode of $path to $mode_str");
+	    if ($update) {
+		chmod($mode, $path) or die $!;
 	    }
 	}
     }
@@ -1905,9 +1983,15 @@ sub DirSync {
 	    return;
 	}
 
+	# Exluding patterns from purge?
+	my $excluding = $opts{EXCLUDE} && ($opts{PURGE} ne 'EXCLUDED');
+
 	foreach my $file ( ReadDir($destdir) ) {
 	    if ( !$src_exists{$file} ) {
-		RemoveFile("$destdir/$file", @args);
+		my $path = "$destdir/$file";
+		unless ($excluding && IsExcluded($opts{EXCLUDE}, $path)) {
+		    RemoveFile($path, @args);
+		}
 	    }
 	}
     }
@@ -2236,13 +2320,22 @@ sub Tidy ($%) {
     }
     my $ftype = $fi->type;
     return if ($ftype eq 'NONE');
-    
-    unless ($opts{EXCLUDE} && IsExcluded($opts{EXCLUDE}, $path, 1)
+
+    my $excluded = 0;
+    if ($opts{EXCLUDE}) {
+	# If explicitly excluded skip this path and any children - if simply
+	# doesn't match any pattern then exclude this path from tidy but
+	# consider children.
+	$excluded = IsExcluded($opts{EXCLUDE}, $path, 2);
+	return if $excluded == 1;
+    }
+
+    unless ($excluded
 	    || $opts{ATIME} && Age($fi->atime) < $opts{ATIME}
 	    || $opts{CTIME} && Age($fi->ctime) < $opts{CTIME}
 	    || $opts{MTIME} && Age($fi->mtime) < $opts{MTIME}
 	    ) {
-	# File passes match list
+	# File matches criteria
 	if ($ftype ne 'DIR' || $opts{RMDIR}) {
 	    # File is not a directory, or directory removal is allowed.
 	    RemoveFile($path, %opts);
@@ -2317,7 +2410,11 @@ sub FileSync {
     Debug("syncing $srcpath to $destpath");
     my $si = GetFileInfo($srcpath);
     if ($opts{EXCLUDE} && IsExcluded($opts{EXCLUDE}, $srcpath)) {
-	$si->type('NONE');
+	if ($opts{PURGE} eq 'EXCLUDED') {
+	    $si->type('NONE');
+	} else {
+	    return
+	}
     }
     my $newsrcpath = $srcpath;
     if ($si->type eq 'LINK' && $opts{FOLLOW_LINKS}) {
@@ -2531,7 +2628,7 @@ sub GetSession() {
     my $session = "$vardir/session/$sid";
     my $host = GetHost();
 
-    Info("starting session $sid");
+    Undo("debug", "starting session $sid");
 
     RealMakeDir($session);
 
@@ -2566,6 +2663,7 @@ EOF
 sub PreSpawn() {
     if (defined $logfh) {
 	close($logfh) or die $!;
+	$logfh = undef;
     }
     UntieFile(%cksums) if tied %cksums;
 }
@@ -2883,27 +2981,6 @@ sub usage(;$$) {
     exit($exitcode);
 }
 
-#----------------------------------------
-# Parse command line.
-
-my %global_opts = (
-    INFORM => '',
-    I => 'INFORM',
-
-    DRYRUN => '',
-    N => 'DRYRUN',
-    DRY_RUN => 'DRYRUN',
-    RECON => 'DRYRUN',
-    TEST => 'DRYRUN',
-    
-    DEBUG => '',
-    D => 'DEBUG',
-    
-    SPLAY => \&parse_int,
-
-    HELP => '',
-    '?' => 'HELP',
-);
 
 # Command names that can only be used on the command line (because the name
 # is illegal/reserved in perl)
@@ -2916,18 +2993,8 @@ my %cmd_alias = (
 );
 
 sub main() {
-    my ($optref, $cmd, @args) = get_options(\%global_opts, @ARGV);
-    usage(0) if ($optref->{HELP} || !defined $cmd);
-
-    if ($optref->{SPLAY}) {
-	# Introduce random delay up to $splay minutes - generally used to keep
-	# all machines from hitting the cfmaster at the same time.
-	sleep(rand($optref->{SPLAY}*60));
-    }
-    delete $optref->{SPLAY};
-
-    # Remaining options are modal flags.
-    Cf::SetFlagsFromHash(%{$optref});
+    my ($cmd, @args) = Cf::parse_args(@ARGV);
+    usage(0) if (!defined $cmd);
 
     # perform command
 
