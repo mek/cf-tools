@@ -1,6 +1,14 @@
 #!/usr/bin/env perl
 
 use strict;
+
+BEGIN {
+    # Add script's directory to module search path
+    use FindBin;
+    my $scriptdir = $FindBin::Bin;
+    push(@INC, $scriptdir);
+}
+
 use English;
 use Getopt::Long;
 use Pod::Usage;
@@ -8,7 +16,7 @@ use File::Basename;
 
 my %simple_cmds = (
     'man' => sub { pod2usage(-exitstatus => 0, -verbose => 2) },
-    'init-shell' => sub { print dirname($0)."/cfinit.sh" },
+    'init-shell' => sub { print dirname($0)."/cfinit.sh\n" },
 );
 my %commands = (
     'changes' => \&do_changes,
@@ -26,7 +34,7 @@ my %commands = (
 my $cmd = shift(@ARGV);
 if (defined $commands{$cmd}) {
     # core script command - continue on
-} elsif (defined $commands{$cmd}) {
+} elsif (defined $simple_cmds{$cmd}) {
     # simple command - do it now
     $simple_cmds{$cmd}->();
     exit();
@@ -167,10 +175,17 @@ cf I<cf-command> [I<options>] [I<arg> ..]
    run cmd arg ..	Execute external command
 
  Options:
-    --user user
-    --mode permission
-    --group group
     --changetype
-    --recurse
+    --checktype
+    --group group
+    --mode permission
+    --recurse depth
+    --user user
+
+    --debug
+    --inform
+    --test
+
+    --help
 
 =cut
