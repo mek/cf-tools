@@ -34,6 +34,9 @@
 # from old start script.
 #
 # Implement undo from log
+#
+# Strict checking on options - i've been burned by passing options that are
+# silently ignored.
 
 
 use strict;
@@ -88,11 +91,18 @@ BEGIN {
 # Boolean: true if microsoft windows platform. Otherwise, a posix system is
 # assumed.
 
-my $is_win = ($^O eq 'MSWin32');
+my $is_win = ($^O eq 'MSWin32' || $^O eq 'cygwin');
+
+# Is this the root user (or equivalent).
+# Controls config settings - not award special privileges) so we dont have
+# to be too thorough.
+
+my $is_root = $is_win ? ($ENV{USERNAME} eq "Administrator") : ($UID == 0);
+$is_win = 0;
 
 # Where to store our state files.
 
-my $vardir = ($UID == 0) ? '/var/lib/cf' : "$ENV{HOME}/.cf";
+my $vardir = $is_root ? '/var/lib/cf' : "$ENV{HOME}/.cf";
 
 # base of configuration script/module tree
 
@@ -386,34 +396,34 @@ sub SetFlagsFromHash(%) {
 # Try to find named progam in listed directory. Return full path of program
 # if succesful, otherwise throws an exception.
 
-sub FindProgram($@) {
-    my ($progname, @dirs) = @_;
-    my @endings = ($is_win) ? ('.exe', '.com', '.bat') : ('');
-    foreach my $dir (@dirs) {
-	foreach my $suffix (@endings) {
-	    my $path = $dir . "/$progname$suffix";
-	    Debug('trying (' . $dir . ') ' . $path);
-	    return $path if (-x $path && !(-d $path));
-	}
-    }
-    die "could not locate program $progname";
-}
+#sub FindProgram($@) {
+#    my ($progname, @dirs) = @_;
+#    my @endings = ($is_win) ? ('.exe', '.com', '.bat') : ('');
+#    foreach my $dir (@dirs) {
+#	foreach my $suffix (@endings) {
+#	    my $path = $dir . "/$progname$suffix";
+#	    Debug('trying (' . $dir . ') ' . $path);
+#	    return $path if (-x $path && !(-d $path));
+#	}
+#    }
+#    die "could not locate program $progname";
+#}
 
 #-------
 # Path manipulation .. no longer used but should do something instead of the
 # current adhoc manipulation.
 
-sub GetPath() {
-    my $sep = ($is_win) ? ';' : ':';
+#sub GetPath() {
+#    my $sep = ($is_win) ? ';' : ':';
+#
+#    return split($sep, $ENV{PATH});
+#}
 
-    return split($sep, $ENV{PATH});
-}
-
-sub PrependPath(@) {
-    my $sep = ($is_win) ? ';' : ':';
-
-    $ENV{PATH} = join($sep, @_) . $sep . $ENV{PATH};
-}
+#sub PrependPath(@) {
+#    my $sep = ($is_win) ? ';' : ':';
+#
+#    $ENV{PATH} = join($sep, @_) . $sep . $ENV{PATH};
+#}
 
 # Convert native-OS or perl-style file path to cygwin-style path.
 
@@ -680,58 +690,58 @@ sub all {
 # logged in users instead (could extend to include people using various
 # services like samba ...)?
 
-sub DisplayMessage($) {
-    my $message = shift();
-    my $pobj;
-
-    Sendmail("cfengine notice", $message, LocalUsers());
-}
-
-
-my @users;
-sub LocalUsers() {
-    if (!scalar(@users)) {
-	if ($is_win) {
-	    require Win32::NetAdmin;
-	    Win32::NetAdmin::LoggedOnUsers('', \@users);
-	} else {
-	    my %uflag = ();
-	    foreach my $line (split("\n", ReadCommand("who"))) {
-		if ($line =~ /^(\w+)/) {
-		    $uflag{$1} = 1;
-		}
-	    }
-	    @users = keys(%uflag);
-	}
-    }
-    return @users
-}
+#sub DisplayMessage($) {
+#    my $message = shift();
+#    my $pobj;
+#
+#    Sendmail("cfengine notice", $message, LocalUsers());
+#}
 
 
-sub Sendmail($$@) {
-    require Mail::Sender;
+#my @users;
+#sub LocalUsers() {
+#    if (!scalar(@users)) {
+#	if ($is_win) {
+#	    require Win32::NetAdmin;
+#	    Win32::NetAdmin::LoggedOnUsers('', \@users);
+#	} else {
+#	    my %uflag = ();
+#	    foreach my $line (split("\n", ReadCommand("who"))) {
+#		if ($line =~ /^(\w+)/) {
+#		    $uflag{$1} = 1;
+#		}
+#	    }
+#	    @users = keys(%uflag);
+#	}
+#    }
+#    return @users
+#}
 
-    my ($subject, $message, @recipients) = @_;
-    my $sender = new Mail::Sender( {smtp => 'mailhost'} );
-    die "Mail failed: $Mail::Sender::Error" if !ref($sender);
 
-    my $user = 'nobody';
-    foreach my $varname ('LOGNAME', 'USERNAME') {
-	if ($ENV{$varname}) {
-	    $user = $ENV{$varname};
-	    last;
-	}
-    }
-
-    # Send the mail.
-    my $result = $sender->MailMsg( {
-	    to => join(', ', @recipients),
-	    from => $user,
-	    subject => $subject,
-	    msg => $message,
-	    } );
-    die "Mail failed: $Mail::Sender::Error" if !ref($result);
-}
+#sub Sendmail($$@) {
+#    require Mail::Sender;
+#
+#    my ($subject, $message, @recipients) = @_;
+#    my $sender = new Mail::Sender( {smtp => 'mailhost'} );
+#    die "Mail failed: $Mail::Sender::Error" if !ref($sender);
+#
+#    my $user = 'nobody';
+#    foreach my $varname ('LOGNAME', 'USERNAME') {
+#	if ($ENV{$varname}) {
+#	    $user = $ENV{$varname};
+#	    last;
+#	}
+#    }
+#
+#    # Send the mail.
+#    my $result = $sender->MailMsg( {
+#	    to => join(', ', @recipients),
+#	    from => $user,
+#	    subject => $subject,
+#	    msg => $message,
+#	    } );
+#    die "Mail failed: $Mail::Sender::Error" if !ref($result);
+#}
 
 
 #----------------------------------------------------------------------
@@ -1326,6 +1336,13 @@ sub PurgeBackupIndex() {
     UntieFile(%pathmap);
 }
 
+sub MoveOld($) {
+    my ($path) = @_;
+    my $old = "$path-cfold";
+    RealRemoveTree($old) if (stat($old));
+    rename($path, $old) or die "can't move $path to $old: $!\n";
+}
+
 # Move temp file into its permanent location. First check that the file has
 # the appropriate attributes (matching passed options).
 
@@ -1340,15 +1357,23 @@ sub MoveTemp($$%) {
 
     Backup($target, %opts);
     my $old;
-    if (-d $target && ! -l $target) {
+    if (-d $target && ! -l _) {
 	# Target is a real directory - can't replace with rename. Move
 	# target out of the way and we will remove the tree after temp is in
 	# place.
-	$old = "$target-cfold";
-	RealRemoveTree($old) if (stat($old));
-	rename($target, $old) or die "can't move $target to $old: $!\n";
+	$old = MoveOld($target);
     }
-    rename($tmp, $target) or die "can't move $tmp to $target: $!\n";
+    my $rc = rename($tmp, $target);
+    if (!$rc && (-e $target || -l _)) {
+	# Move failed and target location exists
+	# Try moving target out of the way instead of deleting (if this is
+	# cygwin may be locked by nasty OS).
+	$old = MoveOld($target);
+	$rc = rename($tmp, $target);
+	
+    }
+    die "can't move $tmp to $target: $!\n" if !$rc;
+
     if ($old) {
 	RealRemoveTree($old);
     }
@@ -1369,7 +1394,7 @@ sub IsAbsolute($) {
     my ($path) = @_;
     if ($is_win) {
 	$path = UnsysPath($path);
-	return ( $path =~ m{^[A-Za-z]:/} || $path =~ m{^//} );
+	return ( $path =~ m{^[A-Za-z]:/} || $path =~ m{^/} );
     } else {
 	return ( $path =~ m{^/} );
     }
