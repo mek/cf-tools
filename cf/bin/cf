@@ -161,7 +161,7 @@ sub parse_mode {
 }
 
 push(@EXPORT, qw(&parse_string &parse_int &parse_float &parse_enum
-	@parse_bool));
+	&parse_bool));
 
 # Could break this up by operation... - but that would make it harder to avoid
 # conflicts.
