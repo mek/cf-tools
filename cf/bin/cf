@@ -62,6 +62,7 @@ use File::Copy;
 use File::Path;
 use File::Basename;
 use File::Find;
+use IPC::Open2;
 use IPC::Open3;
 use IO::File;
 
@@ -259,6 +260,8 @@ my %parse_opt = (
     TEMPDIR => \&parse_string,
 
     UMOUNT => '',
+
+    PREPEND => \&parse_bool,
 );
 
 # Usage: get_options parser-hashref arg ..
@@ -1108,11 +1111,8 @@ sub ReadFile {
 	my $fakepath = GetFake($filename);
 	$filename = $fakepath if (-f $fakepath);
     }
-    open(FILE, "<$filename") or die "can't open $filename: $!";
-    my $contents = join('', <FILE>) ;
-    close FILE;
+    my $contents = RawReadFile($filename);
     chomp($contents);
-
     return $contents;
 }
 sub read_file {
@@ -1121,6 +1121,13 @@ sub read_file {
 }
 push(@EXPORT, '&read_file');
 
+sub RawReadFile {
+    my ($filename) = @_;
+    open(FILE, "<$filename") or die "can't open $filename: $!";
+    my $contents = join('', <FILE>) ;
+    close FILE;
+    return $contents;
+}
 
 # Determine mount point of filesystem for specified path.
 
@@ -1980,8 +1987,10 @@ sub CopyFile {
     $newtime = $flags{NEW_TIME} unless defined $newtime;
 
     die "can't use binary comparison for remote copy\n"
-	    if ($opts{REMOTE_SRC})
+	    if ($opts{REMOTE_SRC} || $opts{REMOTE_DEST})
 		&& ($compare eq 'BINARY' || $verify eq 'BINARY');
+    die "source and destination are remote\n"
+	    if ($opts{REMOTE_SRC} && $opts{REMOTE_DEST});
 
     my $si = GetFileInfo($srcpath);
     my $di = GetFileInfo($destpath);
@@ -2034,6 +2043,8 @@ sub CopyFile {
     eval {
 	if ($opts{REMOTE_SRC}) {
 	    Geturl($srcpath, $temp);
+	} elsif ($opts{REMOTE_DEST}) {
+	    SendCommand($opts{REMOTE_DEST}, 'PUT', RawReadFile($srcpath));
 	} else {
 	    File::Copy::copy($srcpath, $temp)
 		or die "can't copy from $srcpath: $!\n";
@@ -2159,9 +2170,15 @@ sub DirSync {
 
     foreach my $file ( ReadDir($srcdir) ) {
 	my $destfile = $file;
+
+	# Translate filename to/from url
 	if ($opts{REMOTE_SRC}) {
 	    $destfile = Decode($destfile);
 	}
+	if ($opts{REMOTE_DEST}) {
+	    $destfile = Encode($destfile);
+	}
+
 	FileSync("$srcdir/$file", "$destdir/$destfile", @args);
 	$src_exists{$destfile} = 1;
     }
@@ -2624,7 +2641,7 @@ sub SetLine($$$%) {
     my ($path, $pattern, $line, %opts) = @_;
 
     my $orig = ReadFile($path);
-    my $new = StrSetLine($orig, $pattern, $line, $path);
+    my $new = StrSetLine($orig, $pattern, $line, $path, $opts{PREPEND});
     WriteFile($path, $new, %opts) if defined $new;
 }
 
@@ -2634,8 +2651,8 @@ sub setline {
 }
 push(@EXPORT, '&setline');
 
-sub StrSetLine($$$$) {
-    my ($str, $pattern, $line, $src) = @_;
+sub StrSetLine($$$$;$) {
+    my ($str, $pattern, $line, $src, $prepend) = @_;
 
     die "desired line ($line) does not match pattern ($pattern)\n"
 	    unless $line =~ $pattern;
@@ -2650,7 +2667,11 @@ sub StrSetLine($$$$) {
     my $new = $str;
     my $subs = ($new =~ s/$pattern/$line/mg);
     if ($subs == 0) {
-	$new .= "\n" . $line;
+	if ($prepend) {
+	    $new = "$line\n" . $new;
+	} else {
+	    $new .= "\n" . $line;
+	}
 	MarkChange("adding $line in $src");
     } elsif ($subs == 1) {
 	return if ($new eq $str);
@@ -2926,6 +2947,9 @@ my $server_root = "$ENV{HOME}/cfsync";
 my $server_writedir = "upload";
 
 sub syncserver {
+    # auto-flush output
+    $| = 1;
+
     while (my $line = <STDIN>) {
 	chomp($line);
 	my @args = ();
@@ -3003,15 +3027,30 @@ sub Sync_PUT {
 }
 
 sub SendCommand($$@) {
-    my ($fh, $cmd, @args) = @_;
+    my ($handles, $cmd, @args) = @_;
+    my ($rfh, $wfh) = @{$handles};
+
+    my $upblob;
+    if ($cmd eq "PUT") {
+	$upblob = $args[0];
+	$args[0] = length($upblob);
+    }
+
     my @encargs = ();
     foreach my $arg (@args) {
 	push(@encargs, Encode($arg));
     }
-    print($fh, join(' ', $cmd, @encargs), "\n");
+    my $cmdstr = join(' ', $cmd, @encargs);
+    debug("sending: $cmdstr");
+    print $wfh $cmdstr, "\n";
+    if (defined $upblob) {
+	print $wfh $upblob;
+    }
+    $wfh->flush();
 
-    my $line = <$fh>;
+    my $line = <$rfh>;
     chomp($line);
+    debug("  got: $line");
     my @args = ();
     foreach my $arg (split(' ', $line)) {
 	push(@args, Decode($arg));
@@ -3021,15 +3060,15 @@ sub SendCommand($$@) {
 	die "remote $cmd failed: $args[0]\n";
     } elsif ($code eq '200') {
 	return $args[0];
-    } elsif ($code eq '202') {
-	my $size = $args[0];
+    } elsif ($code eq '201') {
+	my $size = $args[1];
 	my $blob;
-	my $actual = read($fh, $blob, $size);
-	die $! unless $actual;
+	my $actual = read($rfh, $blob, $size);
+	die $! unless defined $actual;
 	die "only got $actual of $size bytes" if $actual != $size;
 	return $blob;
     } else {
-	die "unknown result code $code for $cmd\n";
+	die "unknown result code for $cmd: $code\n";
     }
 }
 
@@ -3038,21 +3077,30 @@ sub push {
 
     # parse dest url
     my @opts = ();
-    my ($user, $x, $server) = ($destdir =~ m{^scf://((\w)*@)?(\w\.*)/})
+    my ($user, $x, $server) = ($destdir =~ m{^scf://((\w)*@)?([\w\.\-]*)/})
 	    or die "bad push target: $destdir\n";
     push(@opts, '-l', $user) if $user;
 
 
     # open connection to server
-    my $fh = new IO::File;
-    open($fh, "|ssh ".join(' ', @opts)." $server cf syncserver");
+    my $rfh = new IO::File;
+    my $wfh = new IO::File;
+    #open($fh, "ssh ".join(' ', @opts)." $server cf syncserver|");
+    #open($fh, "ssh ".join(' ', @opts)." $server bin/cf syncserver|");
+    my $pid = open2($rfh, $wfh,
+	    "ssh ".join(' ', @opts)." $server bin/cf syncserver");
+    my $handles = [$rfh, $wfh];
 
     # Load TOC from server
-    my $toc = SendCommand($fh, 'TOC');
+    my $toc = SendCommand($handles, 'TOC');
+    debug("got toc: $toc");
     LoadTOC($destdir, $toc, 1);
 
-    DirSync($srcdir, $destdir, REMOTE_DEST=>$fh);
+    DirSync($srcdir, $destdir, REMOTE_DEST=>$handles);
+
+    #! wait for pid
 }
+push(@EXPORT, '&push');
 
 # Get short hostname of this machines.
 # Eventually allow sites to includes some domain components in this host

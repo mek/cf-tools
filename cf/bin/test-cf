@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 61;
+use Test::More tests => 62;
 use English;
 use File::Temp;
 use File::stat;
@@ -243,6 +243,9 @@ ok(Cf::IsExcluded( [
 
     setline($tmp, "^bar=", "bar=0");
     is(Cf::ReadFile($tmp), "foo=2\nbar=0",  "setline(), new line");
+
+    setline(-prepend=>1, $tmp, "^my=", "my=none");
+    is(Cf::ReadFile($tmp), "my=none\nfoo=2\nbar=0",  "setline(), prepend line");
 
     `echo foo=1 >>$tmp`;
     eval { setline($tmp, "^foo=", "foo=hi"); };
