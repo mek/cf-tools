@@ -54,7 +54,6 @@ BEGIN {
 }
 
 use AnyDBM_File;
-use Class::Struct;
 use Cwd;
 use English;
 use Fcntl qw( :DEFAULT :flock);
@@ -1434,25 +1433,6 @@ sub AbsolutePath($;$) {
 # checksum in particular
 
 
-struct( FileInfo => [
-	dev => '$',		# from stat
-	ino => '$',		# from stat
-	nlink => '$',		# from stat
-	uid => '$',		# from stat
-	gid => '$',		# from stat
-	size => '$',		# from stat
-	atime => '$',		# from stat
-	mtime => '$',		# from stat
-	ctime => '$',		# from stat
-	perm => '$',		# Permission bits from mode
-	type => '$',		# FILE, DIR, LINK or SPECIAL
-
-	linkdest => '$',	# destination of synbolic link
-	dir => '$',		# contents of directory - array ref
-	cksum => '$',		# posix cksum checksum (CRC)
-	md5 => '$',		# MD5 checksum
-	] );
-
 # Stored file information, indexed by absolute (canonical) path
 my %file_info = ();
 
@@ -1597,7 +1577,7 @@ sub GetFileInfo($) {
     my ($path) = @_;
 
     return $file_info{$path} if (defined $file_info{$path});
-    my $info = new FileInfo;
+    my $info = new Cf::FileInfo;
     my @st = lstat($path);
     if (!@st) {
 	$info->type('NONE');
@@ -2392,7 +2372,7 @@ sub LoadTOC($$$) {
 	    $fullpath = "$url/$repath";
 	}
 
-	my $fi = new FileInfo;
+	my $fi = new Cf::FileInfo;
 	$fi->type($type);
 	$fi->size($size);
 	$fi->mtime($mtime);
@@ -3087,6 +3067,34 @@ SetFlags(split(':', $ENV{CF_FLAGS}));
 # Module Cleanup
 
 END { }
+
+#----------------------------------------------------------------------
+package Cf::FileInfo;
+use Class::Struct;
+
+struct( 'Cf::FileInfo' => [
+	dev => '$',		# from stat
+	ino => '$',		# from stat
+	nlink => '$',		# from stat
+	uid => '$',		# from stat
+	gid => '$',		# from stat
+	size => '$',		# from stat
+	atime => '$',		# from stat
+	mtime => '$',		# from stat
+	ctime => '$',		# from stat
+	perm => '$',		# Permission bits from mode
+	type => '$',		# FILE, DIR, LINK or SPECIAL
+
+	linkdest => '$',	# destination of synbolic link
+	dir => '$',		# contents of directory - array ref
+	cksum => '$',		# posix cksum checksum (CRC)
+	md5 => '$',		# MD5 checksum
+	] );
+
+sub exist($) {
+    my $self = shift;
+    return ($self->type ne 'NONE');
+}
 
 #----------------------------------------------------------------------
 package Cf::Module;

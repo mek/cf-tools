@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 51;
+use Test::More tests => 55;
 use English;
 use File::Temp;
 use File::stat;
@@ -322,5 +322,21 @@ ok(Cf::IsExcluded( [
     
     is(get_uname(), $un, "get_uname()");
     is($ENV{CF_UNAME}, $un, "get_uname() - environ");
+}
+
+# fileinfo()
+
+{
+    my $src = "$tmpdir/a";
+
+    `echo hi >$src`;
+    ok(fileinfo($src)->exist(), "fileinfo()->exist()");
+    is(fileinfo($src)->type, 'FILE', "fileinfo()->type, FILE");
+
+    unlink($src);
+    ok(!fileinfo($src)->exist(), "fileinfo()->exist(), nonexistant");
+    is(fileinfo($src)->type, 'NONE', "fileinfo()->type, NONE");
+
+    unlink($src);
 }
 
