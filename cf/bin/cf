@@ -2916,9 +2916,10 @@ sub GetBase() {
 sub GetSession() {
     return $ENV{CF_SESSION} if (defined $ENV{CF_SESSION});
 
-    # Get path for new session - will need something better than naming by
-    # process id if we want to keep info around for historical info...
-    my $sid = $PID;
+    # Create unique identifier for this session: concatenate process id and
+    # current time (in seconds)
+    my $now = time();
+    my $sid = "$PID-$now";
     my $session = "$vardir/session/$sid";
     my $host = get_host();
     my $uname = get_uname();
