@@ -1350,6 +1350,7 @@ sub MoveOld($) {
     my $old = "$path-cfold";
     RealRemoveTree($old) if (stat($old));
     rename($path, $old) or die "can't move $path to $old: $!\n";
+    return $old;
 }
 
 # Move temp file into its permanent location. First check that the file has
@@ -1366,14 +1367,14 @@ sub MoveTemp($$%) {
 
     Backup($target, %opts);
     my $old;
-    if (-d $target && ! -l _) {
+    if (! -l $target && -d _) {
 	# Target is a real directory - can't replace with rename. Move
 	# target out of the way and we will remove the tree after temp is in
 	# place.
 	$old = MoveOld($target);
     }
     my $rc = rename($tmp, $target);
-    if (!$rc && (-e $target || -l _)) {
+    if (!$rc && (-l $target || -e _)) {
 	# Move failed and target location exists
 	# Try moving target out of the way instead of deleting (if this is
 	# cygwin may be locked by nasty OS).
