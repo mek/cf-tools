@@ -2795,6 +2795,7 @@ sub run {
     my $user = $optref->{OWNER};
     my $dir = $optref->{CHDIR};
     my $timeout = $optref->{TIMEOUT} || 0;
+    my $sloppy_daemon = $optref->{SLOPPY_DAEMON};
     my $cmd = join(' ', @args);
 
     my $msg = "running";
@@ -2809,22 +2810,24 @@ sub run {
 	die "can't fork: $!";
     }
     if ($pid) {
-	# This is the parent - wait for child.
+	unless ($sloppy_daemon) {
+	    # This is the parent - wait for child.
 
-	eval {
-	    local $SIG{ALRM} = sub { die "timeout\n"; };
-	    alarm $timeout if ($timeout > 0);
-	    while (my $line = <PIPE>) {
-		chomp($line);
-		Info($line) if ($line =~ /\S/);
-	    }
-	};
-	if ($@ eq "timeout/n") {
-	    Warn("timeout: $cmd");
-	    kill($pid);
-	} elsif ($@) {
-	    die;
-	};
+	    eval {
+		local $SIG{ALRM} = sub { die "timeout\n"; };
+		alarm $timeout if ($timeout > 0);
+		while (my $line = <PIPE>) {
+		    chomp($line);
+		    Info($line) if ($line =~ /\S/);
+		}
+	    };
+	    if ($@ eq "timeout/n") {
+		Warn("timeout: $cmd");
+		kill($pid);
+	    } elsif ($@) {
+		die;
+	    };
+	}
 	close(PIPE) or die $!;
     } else {
 	# This is the child.
