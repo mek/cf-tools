@@ -2183,6 +2183,10 @@ sub MakeLink {
     # Just print?
     return unless ($update);
 
+    # Make sure parent directories of $dest exist
+    my $parent = dirname($dest);
+    MakeDir($parent);
+
     my $temp = TempName($dest, %opts);
     symlink($src, $temp) or die $!;
     MoveTemp($temp, $dest, %opts);

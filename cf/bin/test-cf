@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 62;
+use Test::More tests => 63;
 use English;
 use File::Temp;
 use File::stat;
@@ -90,6 +90,10 @@ is(readlink($link), "/tmp", "makelink()");
 my $changes = changes();
 makelink("/tmp", $link);
 is($changes, changes(), "makelink(), convergence");
+
+makelink("/tmp", "$tmpdir/sub/l");
+is(readlink("$tmpdir/sub/l"), "/tmp", "makelink(), parents on demand");
+Cf::RealRemoveTree("$tmpdir/sub");
 
 # Backup()
 
