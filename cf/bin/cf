@@ -2162,6 +2162,7 @@ sub geturl {
 	return $geturl_ref->($url, $dest);
     }
 }
+push(@EXPORT, '&geturl');
 string_op("geturl");
 
 sub GeturlLite($;$) {
