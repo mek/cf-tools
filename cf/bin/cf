@@ -113,6 +113,7 @@ my %flags = (
     COPY_TYPE => 'mtime',	# method for comparing files
     VERIFY => 'none',		# method for verifying files
     BACKUP => 'original',	# when to backup
+    TEMPDIR => '',	# where to put temp files
 );
 
 # Boolean: actually perform updates (as opposed to going
@@ -239,6 +240,8 @@ my %parse_opt = (
 
     TIMEOUT => \&parse_int,
     CHDIR => \&parse_string,
+
+    TEMPDIR => \&parse_string,
 );
 
 # Usage: get_options parser-hashref arg ..
@@ -1082,8 +1085,58 @@ sub read_file {
 }
 push(@EXPORT, '&read_file');
 
-sub TempName {
-    my ($dest) = @_;
+
+# Determine mount point of filesystem for specified path.
+
+my %fsroot = ();	# Cache of device # to base path
+sub getmount {
+    my ($optref, $path) = get_options({}, @_);
+
+    # If path does not exist yet find parent dir that does
+    my @st;
+    while (!(@st = stat($path))) {
+	$path = dirname($path);
+    }
+    # Get device number of path
+    my ($origdev, $origino) = @st;
+    my $root = $fsroot{$origdev};
+
+    if (!defined $root) {
+	# Get canonical path
+	my $dir = (-d $path) ? $path : dirname(FollowLinks($path));
+	my $wd = cwd();
+	chdir($dir) or die "can't chdir to $dir: $!";
+	$dir = cwd();
+	chdir($wd) or die "can't chdir to $wd: $!";
+
+	$root = $dir;
+	while (1) {
+	    # Get parent dir.
+	    $dir = dirname($root);
+
+	    # Stop if we are at the root of this path.
+	    last if $dir eq $root;
+
+	    # Stop if parent dir is on a new device
+	    my ($dev, $ino) = lstat($dir);
+	    last if $dev != $origdev;
+
+	    $root = $dir;
+	}
+	$fsroot{$origdev} = $root;
+    }
+    return $root;
+}
+push(@EXPORT, '&getmount');
+string_op('getmount');
+
+# Get temporary path where we can prep a file before renaming it atomically
+# to the specified destination
+
+sub TempName($%) {
+    my ($dest, %opts) = @_;
+    my $tempdir = $opts{TEMPDIR} || $flags{TEMPDIR};
+    my $suffix = $opts{TEMPSUFFIX} || "-cfnew";
 
     die "empty destination for TempName()" unless (length($dest));
 
@@ -1091,7 +1144,14 @@ sub TempName {
     $dest =~ s{/+$}{};
     die "can't create temp for root directory\n" if $dest eq "";
 
-    my $path = "$dest-cfnew";
+    my $path = "$dest$suffix";
+    if (length($tempdir)) {
+	if ($tempdir =~ m{\^/(.*)} ) {
+	    $tempdir = getmount(dirname($dest)) . "/$1";
+	}
+	MakeDir($tempdir);
+	$path = "$tempdir/".basename($path);
+    }
 
     if ( -e $path ) {
 	# Temporary path already exists - remove it (assume it is from a
@@ -1353,9 +1413,9 @@ sub PurgeBackupIndex() {
     UntieFile(%pathmap);
 }
 
-sub MoveOld($) {
-    my ($path) = @_;
-    my $old = "$path-cfold";
+sub MoveOld($%) {
+    my ($path, %opts) = @_;
+    my $old = TempName($path, %opts, TEMPSUFFIX=>"-cfold");
     RealRemoveTree($old) if (stat($old));
     rename($path, $old) or die "can't move $path to $old: $!\n";
     return $old;
@@ -1379,14 +1439,14 @@ sub MoveTemp($$%) {
 	# Target is a real directory - can't replace with rename. Move
 	# target out of the way and we will remove the tree after temp is in
 	# place.
-	$old = MoveOld($target);
+	$old = MoveOld($target, %opts);
     }
     my $rc = rename($tmp, $target);
     if (!$rc && (-l $target || -e _)) {
 	# Move failed and target location exists
 	# Try moving target out of the way instead of deleting (if this is
 	# cygwin may be locked by nasty OS).
-	$old = MoveOld($target);
+	$old = MoveOld($target, %opts);
 	$rc = rename($tmp, $target);
 	
     }
@@ -1919,7 +1979,7 @@ sub CopyFile {
 
     # Safe copy (copy to temp and then move into place)
 
-    my $temp = TempName($destpath);
+    my $temp = TempName($destpath, %opts);
 
     eval {
 	if ($opts{REMOTE_SRC}) {
@@ -2011,7 +2071,7 @@ sub WriteFile {
     my $parent = dirname($destpath);
     MakeDir($parent);
 
-    my $temp = TempName($destpath);
+    my $temp = TempName($destpath, %opts);
     RealWriteFile($temp,$content);
     MoveTemp($temp, $destpath, %opts);
 }
@@ -2030,7 +2090,7 @@ sub MakeLink {
     # Just print?
     return unless ($update);
 
-    my $temp = TempName($dest);
+    my $temp = TempName($dest, %opts);
     symlink($src, $temp) or die $!;
     MoveTemp($temp, $dest);
 }
@@ -2132,7 +2192,7 @@ sub MakeDir {
     # Just print?
     return unless ($update);
 
-    my $temp = TempName($path);
+    my $temp = TempName($path, %opts);
     RealMakeDir($temp);
     MoveTemp($temp, $path, %opts);
 }
@@ -3162,8 +3222,8 @@ sub markchange {
 push(@EXPORT, '&markchange');
 
 sub gettemp {
-    my ($optref, @args) = get_options({}, @_);
-    return TempName(@args[0]);
+    my ($optref, @args) = get_options(\%parse_opt, @_);
+    return TempName(@args[0], %{$optref});
 }
 push(@EXPORT, '&gettemp');
 string_op('gettemp');
