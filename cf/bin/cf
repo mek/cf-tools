@@ -98,11 +98,6 @@ my %flags = (
 
 my $update;
 
-# Counter for system changes - incremented every time configuration is
-# modfied.
-
-my $change_count = 0;
-
 # Root of UNIX filesystem - under windows, will be replaced with the
 # (windows) path to the cygwin root.
 
@@ -467,7 +462,18 @@ boolean_op('updating');
 # Get count of changes made so far. Handy to determine if system is actually
 # changed during a routine (compare change count from start and end).
 
+my $change_count;
+my $change_file;
+my $last_read_changes = 0;
 sub ChangeCount() {
+    if (!defined($change_count)) {
+	if (defined $change_file) {
+	    # In a multi-process configuration session - get changes from
+	    # session state.
+	    $last_read_changes = ReadFile($change_file);
+	}
+	$change_count = $last_read_changes;
+    }
     return $change_count;
 }
 
@@ -475,18 +481,14 @@ sub ChangeCount() {
 
 sub MarkChange(@) {
     Info(@_);
-    if ($change_count == 0 && defined $ENV{CF_SESSION}) {
-	# No changes in this process yet and in a multi-process
-	# configuration session.
-	# Increment the inter-process change counter. Note that the internal
-	# and external counters are not kept in sync - just need to
-	# increment the external one once if any changed are made in this
-	# process.
-	my $change_file = "$ENV{CF_SESSION}/changes";
-	my $session_changes = ReadFile($change_file)+1;
-	RealWriteFile($change_file, $session_changes);
-    }
+    ChangeCount();
     $change_count++;
+    if (defined($change_file) && $change_count == $last_read_changes + 1) {
+	# Always write out the first change after sync with change file - so
+	# that if the process exits it will be noted that a change has
+	# occured.
+	RealWriteFile($change_file, $change_count);
+    }
 }
 
 # Print count of config changes so far (or since prior invocation)
@@ -494,9 +496,7 @@ sub MarkChange(@) {
 sub changes {
     my ($o, $initial) = get_options({}, @_);
     $initial = 0 unless defined $initial;
-    my $session = GetSession();
-    my $changes = ReadFile("$session/changes");
-    return $changes-$initial;
+    return ChangeCount()-$initial;
 }
 push(@EXPORT, '&changes');
 string_op('changes');
@@ -545,6 +545,10 @@ push(@EXPORT, '&testmod');
 
 sub CallModule($$@) {
     my ($modname, $function, @args) = @_;
+
+    # Make sure we have a session
+    GetSession();
+
     my $module = GetModule($modname);
     return $module->call($function, @args);
 }
@@ -580,21 +584,26 @@ sub LoadPerlMod($) {
     my $global_defs = "";
     my %vars = (LoadVars("$dir/site.ini"),
 	    LoadVars("$dir/PERHOST/$host/host.ini"));
-    my $varnames = '$this_svc $this_dir';
     foreach my $key (keys(%vars)) {
-	$varnames .= ' $'.$key;
 	if ($key =~ /^svc_/) {
-	    $global_defs .= sprintf('$%s = Cf::GetModule(\'%s\');',
+	    eval { Cf::GetModule($vars{$key}) };
+	    if ($@) {
+		# Skip definition if module not found - it might be a
+		# compile-only module.
+		next if $@ =~ /^unknown module:/;
+
+		die $@;
+	    }
+	    $global_defs .= sprintf('my $%s = Cf::GetModule(\'%s\');',
 		    $key, $vars{$key});
 	} else {
-	    $global_defs .= sprintf('$%s = \'%s\';', $key, $vars{$key});
+	    $global_defs .= sprintf('my $%s = \'%s\';', $key, $vars{$key});
 	}
     }
     eval "package $package;"
 	. 'BEGIN { import Cf; }'
-	. "use vars qw($varnames);"
-	. '$this_svc = $module;'
-	. '$this_dir = $dir;'
+	. 'my $this_svc = $module;'
+	. 'my $this_dir = $dir;'
 	. $global_defs
 	. Cf::ReadFile($script);
     die "while loading $script: $@" if $@;
@@ -1017,6 +1026,11 @@ sub ReadFile {
 
     return $contents;
 }
+sub read_file {
+    my ($optref, $path) = get_options({}, @_);
+    ReadFile($path);
+}
+push(@EXPORT, '&read_file');
 
 sub TempName {
     my ($dest) = @_;
@@ -1396,15 +1410,13 @@ sub ReadDir {
 	return @{$childref};
     }
 
-    my @children;
-    my $child;
+    my @children = ();
 
+    # Get all children of directory, except "." and ".."
+    my %skip = ( "." => 1, ".." => 1,);
     opendir(DIR, $path) or die "$!: $path\n";
-    while ( defined($child = readdir(DIR)) && $child =~ /^\.\.?$/ ) {
-	# Keep on reading
-    }
-    if ( $child ) {
-	push(@children, $child, readdir(DIR));
+    while ( defined(my $child = readdir(DIR)) ) {
+	push(@children, $child) unless $skip{$child};
     }
     closedir(DIR);
 
@@ -2063,11 +2075,15 @@ sub MakeDir {
 # caller. Throws an exception if the document cannot be retrieved.
 
 my $geturl_ref;
+my $gethttp_ref;
 my $lwp_ua;
 sub geturl {
     my ($optref, $url, $dest) = get_options({}, @_);
 
     if (not defined $geturl_ref) {
+	eval { require HTTP::Lite; };
+	$gethttp_ref = \&GeturlLite unless ($@);
+
 	eval {
 	    require LWP::UserAgent;
 	    require HTML::HeadParser;	# Some boxes are missing this module
@@ -2081,13 +2097,47 @@ sub geturl {
 	    $lwp_ua = LWP::UserAgent->new;
 	}
     }
-    $geturl_ref->($url, $dest);
+    if ($gethttp_ref && $url =~ /^http:/) {
+	return $gethttp_ref->($url, $dest);
+    } else {
+	return $geturl_ref->($url, $dest);
+    }
 }
 string_op("geturl");
 
+sub GeturlLite($;$) {
+    my ($url, $dest) = @_;
+    Debug("downloading $url (lite)");
+
+    my $http = new HTTP::Lite;
+    my @args = ();
+    my $fh;
+    if (defined $dest) {
+	$fh = new IO::File;
+	open($fh, ">$dest") or die "can't write to $dest: $!\n";
+	push(@args, \&GeturlLiteCallback, $fh);
+    }
+    my $req = $http->request($url, @args)
+	    or die "failed to get $url: $!\n";
+    die "failed to get $url ($req): ".$http->status_message()
+	    if $req ne "200";
+
+    if (defined $dest) {
+	close($fh) or die $!;
+    } else {
+	return $http->body();
+    }
+}
+
+sub GeturlLiteCallback {
+    my ($self,$dataref,$cbargs) = @_;
+    print $cbargs $$dataref;
+    return undef;
+}
+
 sub GeturlLwp($;$) {
     my ($url, $dest) = @_;
-    Debug("downloading $url");
+    Debug("downloading $url (lwp)");
     my $req = HTTP::Request->new(GET => $url);
     my $res;
     if (defined $dest) {
@@ -2391,6 +2441,32 @@ sub setline {
 }
 push(@EXPORT, '&setline');
 
+# Delete lines that match a specified pattern.
+
+sub DeleteLines($$$%) {
+    my ($path, $pattern, $line, %opts) = @_;
+
+    Debug("comment lines in $path matching ($pattern)");
+
+    my $orig = ReadFile($path);
+    my @origlines = split("\n", $orig);
+    my @newlines = grep(!/$pattern/, @origlines);
+    my $new = join("\n", @newlines);
+
+    my $delcount = @origlines - @newlines;
+    if ($delcount) {
+	MarkChange(
+	    "deleting $delcount line(s) from $path that match $pattern");
+    }
+    WriteFile($path, $new, %opts);
+}
+
+sub deletelines {
+    my ($optref, $path, $pattern, $line) = get_options(\%parse_opt, @_);
+    DeleteLines($path, $pattern, $line, %{$optref});
+}
+push(@EXPORT, '&deletelines');
+
 # Synchronize to catalogued network volume
 
 sub RemoteSync($$%) {
@@ -2533,9 +2609,12 @@ sub BecomeUser($) {
 
 sub RunAsUser($@) {
     my ($user, @args) = @_;
-
     my $cmd = join(' ', @args);
-    MarkChange("running as $user: $cmd\n");
+
+    my $msg = "running";
+    $msg += "as $user" if length($user);
+    MarkChange("$msg: $cmd");
+
     return unless ($update);
 
     PreSpawn();
@@ -2563,7 +2642,7 @@ sub RunAsUser($@) {
 sub Run(@) {
     my $cmd = join(' ', @_);
 
-    MarkChange("running: $cmd\n");
+    MarkChange("running: $cmd");
     return unless ($update);
 
     PreSpawn();
@@ -2585,9 +2664,9 @@ sub ReadCommand($) {
     my ($command) = @_;
     my $buffer = '';
     my $maxsize = 100000;
-    open(PIPE, "$command |") or die $!;
+    open(PIPE, "$command |") or die "command failed $!: $command\n";
     read(PIPE, $buffer, $maxsize);
-    close(PIPE) or die "command failed $!: $command";
+    close(PIPE) or die "command failed $!: $command\n";
     return $buffer;
 }
 sub read_command {
@@ -2630,10 +2709,15 @@ sub GetSession() {
 
     Undo("debug", "starting session $sid");
 
+    $ENV{CF_SESSION} = $session;
+    SetSession();
+
     RealMakeDir($session);
 
     # Initialize session state.
-    RealWriteFile("$session/changes", "0");
+    my $changes = $change_count || 0;
+    RealWriteFile($change_file, $changes);
+
     # !!! this script needs to be thought out more carefully!
     # what exactly are it's duties:
     # *
@@ -2655,17 +2739,37 @@ then
 fi
 EOF
 
-    $ENV{CF_SESSION} = $session;
     return $session;
 }
 
+# Define session-based globals
+
+sub SetSession() {
+    my $session = $ENV{CF_SESSION};
+    $change_file = "$session/changes";
+}
+
+SetSession() if (defined $ENV{CF_SESSION});
+
 # Clean up (flush) various things before spawning a child cf process.
 sub PreSpawn() {
+    # Flush log
     if (defined $logfh) {
 	close($logfh) or die $!;
 	$logfh = undef;
     }
+
+    # Flush file checksums.
     UntieFile(%cksums) if tied %cksums;
+
+    # Flush change count.
+    # Only need to do this if we have an external change file and more than
+    # one change has been made since the last sync with the change file
+    # (first change is flushed immediately).
+    if (defined $change_file && $change_count > $last_read_changes+1) {
+	RealWriteFile($change_file, $change_count);
+	undef $change_count;
+    }
 }
 
 
@@ -2849,7 +2953,7 @@ if (not defined $cfbase) {
     $ENV{CF_BASEDIR} = $cfbase ;
 
     # get mode settings from config-file
-    my $flagfile = "$cfbase/cf/cf-flags";
+    my $flagfile = "$vardir/cf-flags";
     if ( -f $flagfile ) {
 	SetFlagsFromHash(LoadVars($flagfile));
     }
