@@ -240,6 +240,7 @@ my %parse_opt = (
 
     TIMEOUT => \&parse_int,
     CHDIR => \&parse_string,
+    PREVIEW => '',
 
     TEMPDIR => \&parse_string,
 );
@@ -2795,14 +2796,15 @@ sub run {
     my $user = $optref->{OWNER};
     my $dir = $optref->{CHDIR};
     my $timeout = $optref->{TIMEOUT} || 0;
+    my $preview = $optref->{PREVIEW};
     my $sloppy_daemon = $optref->{SLOPPY_DAEMON};
     my $cmd = join(' ', @args);
 
     my $msg = "running";
     $msg .= " as $user" if length($user);
-    MarkChange("$msg: $cmd");
+    MarkChange("$msg: $cmd") unless $preview;
 
-    return unless ($update);
+    return unless ($update || $preview);
 
     PreSpawn();
     my $pid = open(PIPE, "-|");
@@ -2820,10 +2822,11 @@ sub run {
 		    chomp($line);
 		    Info($line) if ($line =~ /\S/);
 		}
+		alarm 0;
 	    };
-	    if ($@ eq "timeout/n") {
-		Warn("timeout: $cmd");
-		kill($pid);
+	    if ($@ eq "timeout\n") {
+		Info("timeout: $cmd");
+		kill('INT', $pid);
 	    } elsif ($@) {
 		die;
 	    };
