@@ -1,22 +1,44 @@
 #!/usr/bin/env perl
 
 use strict;
+use English;
 use Getopt::Long;
 use Pod::Usage;
-use Config::Cf;
+use File::Basename;
 
+my %simple_cmds = (
+    'man' => sub { pod2usage(-exitstatus => 0, -verbose => 2) },
+    'init-shell' => sub { print dirname($0)."/cfinit.sh" },
+);
 my %commands = (
+    'changes' => \&do_changes,
     'copy' => \&do_copy,
     'directory' => \&do_directory,
     'directories' => \&do_directory,
+    'file' => \&do_file,
+    'fix' => \&do_fix,
     'link' => \&do_link,
-    'man' => \&do_man,
+    'run' => \&do_run,
 );
 
 # Parse command line.
 
 my $cmd = shift(@ARGV);
-pod2usage("$0: bad command: $cmd") unless defined $commands{$cmd};
+if (defined $commands{$cmd}) {
+    # core script command - continue on
+} elsif (defined $commands{$cmd}) {
+    # simple command - do it now
+    $simple_cmds{$cmd}->();
+    exit();
+} elsif ($cmd =~ /^(\w*):(.*)/) {
+    # Invoke another configuration module
+    my $module = $1;
+    my $function = $2;
+    my $cfbase = $ENV{CF_BASEDIR} || dirname($0)."/..";
+    exec("$cfbase/$module/configure", $function, @ARGV) or die $!;
+} else {
+    pod2usage("$0: bad command: $cmd") unless defined $commands{$cmd};
+}
 
 my $help = 0;
 my %opts = ();		# Options for config operation
@@ -24,9 +46,11 @@ my %flags = ();		# Major Cf modal flags
 my $checktype;
 Getopt::Long::Configure("require_order");
 GetOptions(
-	'user|owner|u=s' => \$opts{USER},
+	'user|owner|u=s' => \$opts{OWNER},
+	'group|g=s' => \$opts{GROUP},
 	'mode|m=s' => \$opts{MODE},
 	'changetype|t' => \$opts{CHANGE_TYPES},
+	'recurse|r=i' => \$opts{RECURSE},
 
 	'checktype!' => \$checktype,
 
@@ -44,6 +68,15 @@ if ( $opts{MODE} =~ /^[1-9]/ ) {
     $opts{MODE} = "0$opts{MODE}";
 }
 
+# Remove undefined options (GetOptions initiazes all keys to undef)
+foreach my $key (keys(%opts)) {
+    if (!defined($opts{$key})) { delete $opts{$key} };
+}
+
+# Load the config module now.
+
+require Config::Cf;
+
 # Set mode flags
 
 my @flaglist = ();
@@ -55,19 +88,48 @@ foreach my $key (keys(%flags)) {
 }
 Config::Cf::SetFlags(@flaglist);
 
-# Remove undefined options (GetOptions initiazes all keys to undef)
-foreach my $key (keys(%opts)) {
-    if (!defined($opts{$key})) { delete $opts{$key} };
-}
-
 # Invoke command
 
 $commands{$cmd}->();
 exit(0);
 
 
+sub get_session() {
+    return $ENV{CF_SESSION} if (defined $ENV{CF_SESSION});
+    my $cfvar = ($UID == 0) ? '/var/lib/cf' : "$ENV{HOME}/.cf";
+    my $session = "$cfvar/session/$PID";
+    WriteFile("$session/changes", "0");
+    return $session;
+}
+
+sub do_changes() {
+    pod2usage("wrong number of arguments (need 1 or less)") if (@ARGV > 1);
+    my $initial = (@ARGV == 1) ? $ARGV[0] : 0;
+
+    my $session = get_session();
+    my $changes = ReadFile("$session/changes");
+    print $changes-$initial, "\n";
+}
+
+sub do_file() {
+    foreach my $path (@ARGV) {
+	if (-e $path) {
+	    Config::Cf::CheckFile($path, %opts);
+	} else {
+	    Config::Cf::TouchFile($path, %opts);
+	}
+    }
+}
+
+sub do_fix() {
+    foreach my $path (@ARGV) {
+	Config::Cf::CheckFile($path, %opts);
+    }
+}
+
 sub do_copy() {
-    # ...
+    pod2usage("wrong number of arguments (need 2)") if (@ARGV != 2);
+    Config::Cf::FileSync(@ARGV, %opts);
 }
 
 sub do_directory() {
@@ -81,8 +143,8 @@ sub do_link() {
     Config::Cf::MakeLink(@ARGV, %opts);
 }
 
-sub do_man() {
-    pod2usage(-exitstatus => 0, -verbose => 2);
+sub do_run() {
+    Config::Cf::Run(@ARGV);
 }
 
 __END__
@@ -98,8 +160,11 @@ cf I<cf-command> [I<options>] [I<arg> ..]
  Commands:
    copy src .. dest	Copy src file(s) to dest
    directory dir ..	Create directory(s)
+   file path ..		Create file or fix attributes
+   fix path ..		Fix file attributes
    link src dest	Link dest to src
    man			Display manual page
+   run cmd arg ..	Execute external command
 
  Options:
     --user user
