@@ -115,6 +115,8 @@ my %flags = (
     VERIFY => 'none',		# method for verifying files
     BACKUP => 'original',	# when to backup
     TEMPDIR => '',	# where to put temp files
+    SCF_SSH => 'ssh',	# ssh used for scf
+    SCF_CF => 'cf',	# Path to cf on remote machines (scf)
 );
 
 # Boolean: actually perform updates (as opposed to going
@@ -2049,17 +2051,19 @@ sub CopyFile {
     MarkChange("copying $srcpath to $destpath");
     return unless ($update);
 
-    # Make sure parent directories of $destpath exist
-    my $parent = dirname($destpath);
-    MakeDir($parent);
-
     if ($opts{REMOTE_DEST}) {
 	# Copying to remote location.
-	SendPut($opts{REMOTE_DEST}, $destpath, RawReadFile($srcpath));
+	my @args = ();
+	push(@args, $si->mtime) unless $newtime;
+	SendPut($opts{REMOTE_DEST}, $destpath, RawReadFile($srcpath), @args);
 	return;
     }
 
     # Destination is local
+
+    # Make sure parent directories of $destpath exist
+    my $parent = dirname($destpath);
+    MakeDir($parent);
 
     # Safe copy (copy to temp and then move into place)
     my $temp = TempName($destpath, %opts);
@@ -2500,10 +2504,12 @@ sub MakeTOC($$$) {
 	push(@{$dirlines{$dirpath}}, (Encode($basename).' '.$attrs));
     }
 
-    my $wd = cwd();
-    chdir($dir) or die "can't chdir to $dir: $!\n";
-    finddepth({wanted =>\&TocEntry}, '.');
-    chdir($wd) or die "can't chdir to $wd: $!\n";
+    if (-d $dir) {
+	my $wd = cwd();
+	chdir($dir) or die "can't chdir to $dir: $!\n";
+	finddepth({wanted =>\&TocEntry}, '.');
+	chdir($wd) or die "can't chdir to $wd: $!\n";
+    }
 
     # Write master in reverse order to convert depth-first search to
     # breadth-first (so that directories precede their children).
@@ -2755,8 +2761,11 @@ push(@EXPORT, '&str_deletelines');
 sub RemoteSync($$%) {
     my ($srcpath, $destpath, %opts) = @_;
 
-    eval { LoadTreeTOC($srcpath); };
-    LoadDirTOC(dirname($srcpath)) if ($@);
+    if ($srcpath =~ /^scf:/) {
+    } else {
+	eval { LoadTreeTOC($srcpath); };
+	LoadDirTOC(dirname($srcpath)) if ($@);
+    }
 
     FileSync($srcpath, $destpath, %opts, REMOTE_SRC=>1);
 }
@@ -2813,11 +2822,17 @@ sub FileSync {
 	die "type mismatch, $srcpath is $srctype and $destpath is $desttype";
     }
 
+    if ($opts{REMOTE_DEST}) {
+	# Target location is remote
+	return if $srctype eq 'DIR';
+	die "file type $srctype not supported for uploads: $srcpath"
+		if $srctype ne 'FILE';
+    } else {
+	# Make sure parent directories of $destpath exist
 
-    # Make sure parent directories of $destpath exist
-
-    my $parent = dirname($destpath);
-    MakeDir($parent);
+	my $parent = dirname($destpath);
+	MakeDir($parent);
+    }
 
     if ($srctype eq 'LINK') {
 	my $target = ReadLink($srcpath) or die $!;
@@ -3010,7 +3025,7 @@ sub Sync_TOC {
 	SyncCheckPath($relpath);
 	$path .= "/$relpath";
     }
-    my $toc = MakeTOC($path, \%server_fields, 0);
+    my $toc = MakeTOC($path, \%server_fields, 0) ;
     return("OK", $toc);
 }
 
@@ -3038,7 +3053,9 @@ sub Sync_GET {
 }
 
 sub Sync_PUT {
-    my ($relpath, $size) = @_;
+    my ($relpath, $size, $mtime) = @_;
+
+    die "uploads not allowed\n" unless -d "$server_root/$server_writedir";
 
     SyncCheckPath($relpath);
     die "illegal (write) path: $relpath"
@@ -3055,15 +3072,21 @@ sub Sync_PUT {
     print(FILE $content) or die $!;
     close FILE;
 
+    if (defined $mtime) {
+	utime(time(), $mtime, $path) or die $!;
+    }
+
     return("OK");
 }
 
-sub SendPut($$$) {
-    my ($handles, $url, $content) = @_;
+sub SendPut($$$;$) {
+    my ($handles, $url, $content, $mtime) = @_;
 
     my ($relpath) = ($url =~ m{^scf://[^/]*/(.*)})
 	    or die "bad put target: $url\n";
-    SendCommand($handles, 'PUT', $content, $relpath, length($content));
+    my @args = ($relpath, length($content));
+    push(@args, $mtime) if defined $mtime;
+    SendCommand($handles, 'PUT', $content, @args);
 }
 
 sub SendCommand($$@) {
@@ -3106,6 +3129,52 @@ sub SendCommand($$@) {
     }
 }
 
+my %syncs = ();
+
+sub OpenSyncServer($) {
+    my ($url) = @_;
+
+    # parse dest url
+    my @opts = ();
+    my ($user, $x, $server, $path) =
+	    ($url =~ m{^scf://((\w)*\@)?([\w\.\-]*)/(.*)})
+	    or die "bad sync url: $url\n";
+    my $syncurl = "scf://";
+    if ($user) {
+	push(@opts, '-l', $user) if $user;
+	$syncurl .= "$user\@"
+    }
+    $syncurl .= $server;
+
+    return $syncs{$syncurl} if $syncs{$syncurl};
+
+    # open connection to server
+    my $rfh = new IO::File;
+    my $wfh = new IO::File;
+    my $pid = open2($rfh, $wfh,
+	    $flags{SCF_SSH}." ".join(' ', @opts)." $server "
+	    .$flags{SCF_CF}." syncserver"
+	    );
+    my $handles = [$rfh, $wfh];
+
+    $syncs{$syncurl} = $handles;
+    return $handles;
+}
+
+sub CloseSyncServer($) {
+    my ($url) = @_;
+    my $handles = $syncs{$url};
+
+    SendCommand($handles, 'EXIT');
+
+    my ($rfh, $wfh) = @{$handles};
+    close($wfh) or die $!;
+    close($rfh) or die $!;
+    # !!! wait for pid ?
+}
+
+# Sync to a remote location (upload).
+
 sub push {
     my ($optref, $srcdir, $destdir) = get_options(\%parse_opt, @_);
 
@@ -3123,7 +3192,9 @@ sub push {
     #open($fh, "ssh ".join(' ', @opts)." $server cf syncserver|");
     #open($fh, "ssh ".join(' ', @opts)." $server bin/cf syncserver|");
     my $pid = open2($rfh, $wfh,
-	    "ssh ".join(' ', @opts)." $server bin/cf syncserver");
+	    $flags{SCF_SSH}." ".join(' ', @opts)." $server "
+	    .$flags{SCF_CF}." syncserver"
+	    );
     my $handles = [$rfh, $wfh];
 
     # Load TOC from server
@@ -3133,6 +3204,9 @@ sub push {
 
     DirSync($srcdir, $destdir, REMOTE_DEST=>$handles);
 
+    SendCommand($handles, 'EXIT');
+    close($wfh) or die $!;
+    close($rfh) or die $!;
     #! wait for pid
 }
 push(@EXPORT, '&push');
