@@ -1,58 +1,109 @@
-#!/bin/sh
+#!/usr/bin/env perl
 
-linkop="->"
+use strict;
+use Getopt::Long;
+use Pod::Usage;
+use Config::Cf;
 
-while true
-do
-    case $1 in
-    --mode) shift; args="$args mode=$1"; shift ;;
-    --force) shift; linkop="->!"; shift ;;
-    --) shift; break ;;
-    -*) echo "bad option: $1"; exit 1 ;;
-    *) break ;;
-    esac
-done
+my %commands = (
+    'copy' => \&do_copy,
+    'directory' => \&do_directory,
+    'directories' => \&do_directory,
+    'link' => \&do_link,
+    'man' => \&do_man,
+);
 
-tmp=/tmp/tcf
+# Parse command line.
 
-header()
-{
-cat >$tmp <<EOF
-control:
-    actionsequence = ( $1 )
-$1:
-EOF
+my $cmd = shift(@ARGV);
+pod2usage("$0: bad command: $cmd") unless defined $commands{$cmd};
+
+my $help = 0;
+my %opts = ();		# Options for config operation
+my %flags = ();		# Major Cf modal flags
+my $checktype;
+Getopt::Long::Configure("require_order");
+GetOptions(
+	'user|owner|u=s' => \$opts{USER},
+	'mode|m=s' => \$opts{MODE},
+	'changetype|t' => \$opts{CHANGE_TYPES},
+
+	'checktype!' => \$checktype,
+
+	'inform|I!' => \$flags{INFORM},
+	'dry-run|recon|test|n!' => \$flags{DRYRUN},
+	'debug|d!' => \$flags{DEBUG},
+
+	'help|?' => \$help,
+	) or pod2usage(2);
+pod2usage(1) if $help;
+
+$opts{CHANGE_TYPES} = !$checktype if defined $checktype;
+if ( $opts{MODE} =~ /^[1-9]/ ) {
+    # Make sure file mode numbers are interpreted in octal
+    $opts{MODE} = "0$opts{MODE}";
 }
 
-simpleop()
-{
-    header $1
-    shift
-    for f in $*
-    do
-	echo " $f $args" >>$tmp
-    done
+# Set mode flags
+
+my @flaglist = ();
+foreach my $key (keys(%flags)) {
+    if (defined($flags{$key})) {
+	$key = "!$key" if ($flags{$key} == 0);
+	push(@flaglist, $key);
+    }
+}
+Config::Cf::SetFlags(@flaglist);
+
+# Remove undefined options (GetOptions initiazes all keys to undef)
+foreach my $key (keys(%opts)) {
+    if (!defined($opts{$key})) { delete $opts{$key} };
 }
 
-op=$1; shift
-case $op in
-copy)
-    header $op
-    echo " $1 dest=$2 $args" >>$tmp
-    ;;
+# Invoke command
 
-link)
-    header $op
-    echo " $2 $linkop $1 $args" >>$tmp
-    ;;
+$commands{$cmd}->();
+exit(0);
 
-disable|directories|files|tidy)
-    simpleop $op $*
-    ;;
 
-*)
-    echo "bad operation: $op"; exit 1
-    ;;
-esac
+sub do_copy() {
+    # ...
+}
 
-cfagent -f $tmp
+sub do_directory() {
+    foreach my $path (@ARGV) {
+	Config::Cf::MakeDir($path, %opts);
+    }
+}
+
+sub do_link() {
+    pod2usage("wrong number of arguments (need 2)") if (@ARGV != 2);
+    Config::Cf::MakeLink(@ARGV, %opts);
+}
+
+sub do_man() {
+    pod2usage(-exitstatus => 0, -verbose => 2);
+}
+
+__END__
+
+=head1 NAME
+
+sample - Using cf
+
+=head1 SYNOPSIS
+
+cf I<cf-command> [I<options>] [I<arg> ..]
+
+ Commands:
+   copy src .. dest	Copy src file(s) to dest
+   directory dir ..	Create directory(s)
+   link src dest	Link dest to src
+   man			Display manual page
+
+ Options:
+    --user user
+    --mode permission
+    --group group
+
+=cut
