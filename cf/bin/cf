@@ -448,6 +448,13 @@ sub CygPath($) {
     return $path;
 }
 
+sub cygpath {
+    my ($optref, $path) = get_options({}, @_);
+    return CygPath($path);
+}
+push(@EXPORT, '&cygpath');
+string_op('cygpath');
+
 # Convert cygwin-style file path to perl-style path.
 
 sub UncygPath($) {
@@ -478,6 +485,13 @@ sub SysPath($) {
     }
     return $path;
 }
+
+sub syspath {
+    my ($optref, $path) = get_options({}, @_);
+    return SysPath($path);
+}
+push(@EXPORT, '&syspath');
+string_op('syspath');
 
 # Convert native OS file path to perl-style path (replace any backslashes
 # with forward slashes).
