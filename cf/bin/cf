@@ -1,9 +1,12 @@
 #!/bin/sh
 
+linkop="->"
+
 while true
 do
     case $1 in
     --mode) shift; args="$args mode=$1"; shift ;;
+    --force) shift; linkop="->!"; shift ;;
     --) shift; break ;;
     -*) echo "bad option: $1"; exit 1 ;;
     *) break ;;
@@ -21,6 +24,16 @@ $1:
 EOF
 }
 
+simpleop()
+{
+    header $1
+    shift
+    for f in $*
+    do
+	echo " $f $args" >>$tmp
+    done
+}
+
 op=$1; shift
 case $op in
 copy)
@@ -28,17 +41,15 @@ copy)
     echo " $1 dest=$2 $args" >>$tmp
     ;;
 
-directories)
-cat >$tmp <<EOF
-control:
-    actionsequence = ( directories )
-directories:
-EOF
-    for f in $*
-    do
-	echo " $f $args" >>$tmp
-    done
+link)
+    header $op
+    echo " $2 $linkop $1 $args" >>$tmp
     ;;
+
+disable|directories|files|tidy)
+    simpleop $op $*
+    ;;
+
 *)
     echo "bad operation: $op"; exit 1
     ;;
