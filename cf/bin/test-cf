@@ -1,0 +1,310 @@
+#!/usr/bin/env perl
+
+use strict;
+BEGIN {
+    # Add script's parent directory to module search path
+    use FindBin;
+    my $scriptdir = $FindBin::Bin;
+    push(@INC, "$scriptdir/lib/perl");
+}
+use Test::More tests => 49;
+use English;
+use File::Temp;
+use File::stat;
+use File::Basename;
+
+# Make sure all mode flags are cleared.
+$ENV{CF_FLAGS} = "";
+
+# Load Cf package - without running main command line processing.
+{
+    $main::Testing = 1;
+    my $cf = dirname($0)."/cf";
+    my $do_code = do $cf;
+    die "can't parse cf: $@" if $@;
+    die "can't do cf: $!" unless defined $do_code;
+}
+import Cf;
+
+my $tmpdir = File::Temp::tempdir("cftestXXXXXX", TMPDIR => 1, CLEANUP => 1);
+#my $tmpdir = File::Temp::tempdir("cftestXXXXXX", TMPDIR => 1);
+
+# SetFlags()
+
+Cf::SetFlags('INFORM');
+
+ok($ENV{CF_FLAGS} =~ /:INFORM=1:/, "setting ENV{CF_FLAGS}");
+
+my $flags = `sh -c 'echo \$CF_FLAGS'`;
+chomp($flags);
+ok($flags =~ /:INFORM=1:/, "exporting CF_FLAGS");
+
+Cf::SetFlags('INFORM=0');
+ok($ENV{CF_FLAGS} !~ /INFORM/, "clearing INFORM flag");
+
+# run()
+
+{
+    my $tmpfile = "$tmpdir/runflag";
+    ok(!-f $tmpfile, "run() precondition");
+
+    run("touch", "$tmpfile");
+    ok(-f $tmpfile, "run()");
+    unlink($tmpfile) or die $1;
+
+    Cf::SetFlags('DRYRUN');
+    run("touch", "$tmpfile");
+    ok(! -f $tmpfile, "run(), dryrun");
+    Cf::SetFlags('DRYRUN=0');
+
+    SKIP: {
+	skip "not root", 1 unless $UID == 0;
+
+	my $dir = File::Temp::tempdir("cftestoXXXXXX", TMPDIR=>1, CLEANUP=>1);
+	directory(-user=>1, $dir);
+
+	run(-user => 1, "touch $dir/foo");
+	is(stat("$dir/foo")->uid, 1, "run(), -user option");
+
+	Cf::RealRemoveTree($dir);
+    }
+}
+
+
+# file()
+
+my $tmpfile = "$tmpdir/a";
+
+`echo hi >$tmpfile`;
+file(-MODE=>755, $tmpfile);
+is(sprintf("%04o", stat($tmpfile)->mode & 07777), "0755", "file(), MODE");
+file(-m=>"g+s", $tmpfile);
+is(sprintf("%04o", stat($tmpfile)->mode & 07777), "2755", "file(), g+s");
+
+# makelink()
+
+my $link = "$tmpdir/l";
+
+makelink("/tmp", $link);
+is(readlink($link), "/tmp", "makelink()");
+my $changes = changes();
+makelink("/tmp", $link);
+is($changes, changes(), "makelink(), convergence");
+
+# Backup()
+
+{
+    my $bdir = "$tmpdir/back";
+
+    my $file = "$tmpdir/foo";
+    `echo hi >$file`;
+    Cf::Backup($file, BACKUPDIR=>$bdir);
+    is(stat($file)->ino, stat("$bdir/foo")->ino, "Backup(), simple file");
+    unlink($file);
+
+    my $dir = "$tmpdir/dir";
+    `mkdir $dir`;
+    `touch $dir/x`;
+    Cf::RemoveFile($dir, BACKUPDIR=>$bdir);
+    ok(-d "$bdir/dir", "Backup(), directory, same fs");
+    ok(-f "$bdir/dir/x", "Backup(), directory contents, same fs");
+
+    Cf::RealRemoveTree($bdir);
+}
+
+# copy()
+
+{
+    my $src = "$tmpdir/a";
+    my $dest = "$tmpdir/b";
+
+    `echo hi >$src`;
+    copy(-mode => 755, $src, $dest);
+    is(sprintf("%04o", stat($dest)->mode & 07777), "0755", "copy(), MODE");
+
+    `echo hi >$src`;
+    `echo hi >$dest`;
+    my $changes = Cf::ChangeCount();
+    copy(-copytype => 'cksum', $src, $dest);
+    is($changes, Cf::ChangeCount(), "copy(), cksum convergence");
+    `echo bye >$dest`;
+    copy(-copytype => 'cksum', $src, $dest);
+    is(`diff $src $dest`, "", "copy(), cksum");
+
+    unlink($src, $dest);
+}
+
+# rcopy()
+
+{
+    my $src = "$tmpdir/a";
+    my $dest = "$tmpdir/b";
+
+    mkdir($src) or die $!;
+    `echo hi >$src/f1`;
+    `echo bye >$src/f2`;
+    toc($src);
+
+    rcopy("file://$src/f1", "$dest/x");
+    is(`cat $src/f1`, `cat $dest/x`, "rcopy(), within tree");
+
+    rcopy(-r => 4, -purge, "file://$src", $dest);
+    tidy(-r => 4, -i => '.cftoc', $src); # remove toc files for comparison
+    is(`diff -r $src $dest`, "", "rcopy(), at published base");
+
+    Cf::RealRemoveTree($src);
+    Cf::RealRemoveTree($dest);
+}
+
+# IsExcluded()
+
+ok(Cf::IsExcluded( [Cf::ExGlob('PERHOST')], "foo/PERHOST"),
+	"IsExcluded(PERHOST, foo/PERHOST)");
+ok(!Cf::IsExcluded( [Cf::ExGlob('PERHOST')], "foo/PERHOSTx"),
+	"IsExcluded(PERHOST, foo/PERHOSTx)");
+ok(!Cf::IsExcluded( [Cf::ExGlob('/PERHOST')], "/foo/PERHOST"),
+	"IsExcluded(PERHOST, foo/PERHOSTx)");
+ok(Cf::IsExcluded( [Cf::ExGlob('PE*OST')], "/foo/PERHOST"),
+	"IsExcluded(PE*OST, /foo/PERHOST)");
+ok(Cf::IsExcluded( [Cf::ExGlob('PE*OST')], "/foo/PEOST"),
+	"IsExcluded(PE*OST, /foo/PEOST)");
+ok(!Cf::IsExcluded( [Cf::ExGlob('PE*OST')], "/fooPE/OST"),
+	"IsExcluded(PE*OST, /foo/PEOST)");
+ok(!Cf::IsExcluded( [
+	    Cf::InGlob('PE*OST'),
+#	    Cf::ExGlob('*'),
+	    ], "PERHOST"),
+	"IsExcluded() - include");
+ok(!Cf::IsExcluded( [
+	    Cf::InGlob('/*/PERHOST/host/%'),
+	    Cf::ExGlob('/*/PERHOST/%'),
+	    ], "/foo/PERHOST/host/x"),
+	"IsExcluded() - PERHOST ok");
+ok(!Cf::IsExcluded( [
+	    Cf::InGlob('x/PERHOST/host'),
+	    Cf::ExGlob('x/PERHOST/*'),
+	    ], "x/PERHOST/host"),
+	"IsExcluded() - PERHOST 2 ok");
+ok(Cf::IsExcluded( [
+	    Cf::InGlob('/*/PERHOST/host/%'),
+	    Cf::ExGlob('/*/PERHOST/%'),
+	    ], "/foo/PERHOST/other/x"),
+	"IsExcluded() - PERHOST reject");
+ok(Cf::IsExcluded( [
+	    Cf::ExGlob('foo'),
+	    Cf::ExGlob('bar'),
+	    ], "/x/bar"),
+	"IsExcluded() - 2nd filtered");
+ok(!Cf::IsExcluded( [
+	    Cf::ExGlob('foo'),
+	    Cf::ExGlob('bar'),
+	    ], "/x/baz"),
+	"IsExcluded() - default pass");
+ok(Cf::IsExcluded( [
+	    Cf::ExGlob('[0-9]*'),
+	    ], "/my/33"),
+	"IsExcluded() - character ranges");
+
+# tidy()
+
+{
+    my $dir = "$tmpdir/d";
+    mkdir($dir) or die $!;
+    mkdir("$dir/sub") or die $!;
+
+    `echo hi >$dir/foo`;
+    `echo hi >$dir/sub/foo`;
+    `echo bye >$dir/bar`;
+    tidy(-recurse => 1, -include => "foo", $dir);
+    ok(!-f "$dir/foo", "tidy() match");
+    ok(-f "$dir/bar", "tidy() no match");
+    ok(-f "$dir/sub/foo", "tidy() recurse limit");
+
+    mkdir("$dir/sub2") or die $!;
+    tidy(-rmdir => 1, "$dir/sub2/");
+    ok(!-e "$dir/sub2", "tidy(), directories - and trailing /");
+
+    Cf::RealRemoveTree($dir);
+}
+
+# setline()
+
+{
+    my $tmp = "$tmpdir/f";
+
+    `echo foo=1 >$tmp`;
+    setline($tmp, "^foo=", "foo=2");
+    is(Cf::ReadFile($tmp), "foo=2",  "setline(), update line");
+    
+    my $changes = Cf::ChangeCount();
+    setline($tmp, "^foo=", "foo=2");
+    is($changes, Cf::ChangeCount(), "setline(), convergence");
+
+    setline($tmp, "^bar=", "bar=0");
+    is(Cf::ReadFile($tmp), "foo=2\nbar=0",  "setline(), new line");
+
+    `echo foo=1 >>$tmp`;
+    eval { setline($tmp, "^foo=", "foo=hi"); };
+    ok($@,  "setline(), multiple lines (should throw error)");
+
+    # Cleanup
+    Cf::RealRemoveTree($tmp);
+}
+
+# deletelines()
+
+{
+    my $tmp = "$tmpdir/f";
+
+    `echo foo=1 >$tmp`;
+    `echo bar=2 >>$tmp`;
+    deletelines($tmp, "^foo=");
+    is(Cf::ReadFile($tmp), "bar=2",  "deletelines()");
+    
+    `echo foo=1 >$tmp`;
+    my $changes = Cf::ChangeCount();
+    deletelines($tmp, "^bar=");
+    is($changes, Cf::ChangeCount(), "deletelines(), convergence");
+
+    # Cleanup
+    Cf::RealRemoveTree($tmp);
+}
+
+# disable()
+
+{
+    my $dir = "$tmpdir/d";
+    mkdir($dir) or die $!;
+    my $log = "$dir/log";
+
+    `echo xxx >$log`;
+    chmod(0640, $log) or die $!;
+
+    disable(-rotate=>4, $log);
+    is(Cf::ReadFile("$log.1"), "xxx",  "disable(), rotate");
+    is(Cf::ReadFile($log), "",  "disable(), rotate creates empty");
+    is(sprintf("%04o", stat($log)->mode & 07777), "0640",
+	    "disable(), rotate preserve perms");
+
+    disable(-rotate=>4, $log);
+    disable(-rotate=>4, $log);
+    disable(-rotate=>4, $log);
+    is(Cf::ReadFile("$log.4"), "xxx",  "disable(), rotate max");
+
+    disable(-rotate=>4, $log);
+    ok(! -f "$log.5",  "disable(), rotate beyond");
+
+    SKIP: {
+	skip "not root", 2 unless $UID == 0;
+
+	file(-user=>1, -group=>1, $log);
+	disable(-rotate=>4, $log);
+
+	is(stat($log)->uid, 1, "disable(), rotate preserve user");
+	is(stat($log)->gid, 1, "disable(), rotate preserve group");
+    }
+
+    # Cleanup
+    Cf::RealRemoveTree($dir);
+}
+
