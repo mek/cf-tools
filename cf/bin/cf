@@ -1,36 +1,2556 @@
 #!/usr/bin/env perl
 
+# $Id$
+
+
+# TODO !!!
+#
+# Something to ensure we get the correct perl? PATH reset in call_module()
+# could remove the current (preferred) PERL.
+#
+# Change log for sessions. Eventually enough information for rollbak?
+#
+# Track changes in DRYRUN mode so that later file comparisons are made
+# correctly.
+#
+# Consistent path manipulation
+
+
 use strict;
 
+#----------------------------------------------------------------------
+package Cf;
+
+my $scriptdir;
 BEGIN {
-    # Add script's directory to module search path
+    # Add script's directory to module search path and PATH
     use FindBin;
-    my $scriptdir = $FindBin::Bin;
+    $scriptdir = $FindBin::Bin;
     push(@INC, $scriptdir);
+    if ($ENV{PATH} !~ /^$scriptdir:/) {
+	# !!! this PATH is not ms-windows portable
+	$ENV{PATH} = "$scriptdir:$ENV{PATH}";
+    }
 }
 
-use Getopt::Long;
+use AnyDBM_File;
+use Class::Struct;
+use Cwd;
+use English;
+use Fcntl qw( :DEFAULT :flock);
+use File::Compare;
+use File::Copy;
+use File::Path;
+use File::Basename;
+use File::Find;
+use IPC::Open3;
+
+BEGIN {
+    use Exporter ();
+    use vars qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
+
+    # set the version for version checking
+    $VERSION     = 1.00;
+
+    @ISA         = qw(Exporter);
+    @EXPORT      = ( );
+    %EXPORT_TAGS = ( );
+
+    # your exported package globals go here,
+    # as well as any optionally exported functions
+    @EXPORT_OK   = ( );
+}
+
+#-----
+# Globals
+
+# Modal flags
+my %flags = (
+    INFORM => 0,	# notify of any changes made?
+    DRYRUN => 0,	# don't actually make changes
+    DEBUG => 0,		# display debugging output
+    SYSLOG => 0,	# log messages to system log
+    NEW_TIME => 0,	# update time when copying?
+    COPY_MODE => 'mtime',	# method for comparing files
+);
+# Get mode settings from environment.
+SetFlags(split(':', $ENV{CF_FLAGS}));
+
+# Boolean: are we running in the background?
+
+my $background = 0;
+
+# Boolean: actually perform updates (as opposed to going
+# through the motions and reporting what would be done.)
+
+my $update;
+
+# Boolean: true if microsoft windows platform. Otherwise, a posix system is
+# assumed.
+
+my $is_win = ($^O eq 'MSWin32');
+if (!$is_win) {
+    require Sys::Syslog;
+    import Sys::Syslog;
+}
+
+# Counter for system changes - incremented every time configuration is
+# modfied.
+
+my $change_count = 0;
+
+# Root of UNIX filesystem - under windows, will be replaced with the
+# (windows) path to the cygwin root.
+
+my $rootdir = '';
+
+# Where to store our state files.
+
+my $vardir = ($UID == 0) ? '/var/lib/cf' : "$ENV{HOME}/.cf";
+
+# Maximum series of links to follow to find a real target (to avoid infinite
+# link loops).
+my $max_links = 10;
+
+#--------
+# Parsing of configuration options.
+
+sub parse_string { return $_[0] }
+sub parse_int { return int($_[0]) }
+sub parse_float { return $_[0]+0.0 }
+sub parse_enum {
+    my $arg = shift;
+    foreach my $val (@_) {
+	return $val if $arg eq $val;
+    }
+    die "bad choice: $arg (should be " . join(', ', @_), ")\n";
+}
+
+my %bools = (
+    1 => 1, YES => 1, Y => 1, TRUE => 1,
+    0 => 0, NO => 0, N => 0, FALSE => 0,
+);
+sub parse_bool { return $bools{uc($_[0])} }
+
+push(@EXPORT, qw(&parse_string &parse_int &parse_float &parse_enum
+	@parse_bool));
+
+# Could break this up by operation... - but that would make it harder to avoid
+# conflicts.
+my %parse_opt = (
+    OWNER => \&parse_string,
+    USER => "OWNER",
+    U => "OWNER",
+    GROUP => \&parse_string,
+    G => "GROUP",
+    MODE => sub {
+	my $mode = $_[0];
+	# Make sure file mode numbers are interpreted in octal
+	$mode = "0$mode" if ( $mode =~ /^[1-9]/ );
+	return $mode;
+    },
+    M => "MODE",
+
+    CHANGE_TYPES => '',
+    CHANGETYPE => 'CHANGE_TYPES',
+    CHECKTYPE => '!CHANGE_TYPES',
+
+    SKIP_MISSING => '',
+    SKIPMISSING => "SKIP_MISSING",
+
+    PURGE => '',
+    DELETE => "PURGE",
+    D => "PURGE",
+
+    RMDIR => '',
+
+    FOLLOW_LINKS => '',
+    FOLLOWLINKS => "FOLLOW_LINKS",
+    FOLLOW => "FOLLOW_LINKS",
+
+    RECURSE => \&parse_int,
+    R => "RECURSE",
+
+    ROTATE => \&parse_int,
+
+    ATIME => \&parse_float,
+    AGE => "ATIME",
+    MTIME => \&parse_float,
+    CTIME => \&parse_float,
+
+    INCLUDE => sub {
+	my ($arg, $optref) = @_;
+	push ( @{$optref->{EXCLUDE}}, InGlob($arg) );
+	return undef;
+    },
+    I => "INCLUDE",
+    EXCLUDE => sub {
+	my ($arg, $optref) = @_;
+	push ( @{$optref->{EXCLUDE}}, ExGlob($arg) );
+	return undef;
+    },
+    E => "EXCLUDE",
+
+    BACKUP => sub { parse_enum(uc($_[0]), 'ALL', 'ORIGINAL', 'LAST', 'NONE') },
+    BACKUPDIR => \&parse_string,
+);
+
+# Usage: get_options parser-hashref arg ..
+
+sub get_options($@) {
+    my $parse_href = shift;
+    my %opts = ();
+    while (@_[0] =~ /^-/) {
+	my ($opt,$arg) = split('=', shift(@_), 2);
+	my $opt = uc($opt);
+	last if $opt eq '--';
+
+	# Trim all leading dashes
+	$opt =~ s/^-*//;
+	# Replace remaining dashes with underscore
+	$opt =~ s/-/_/g;
+
+	die "bad option: $opt\n" unless defined $parse_href->{$opt};
+	my $parser = $parse_href->{$opt};
+	if (!ref($parser)) {
+	    if ($parser =~ /^!(.*)/) {
+		# Inversion of option without argument
+		$opts{$1} = 0;
+		next;
+	    }
+
+	    if ($parser ne '') {
+		# Option is an alias - get parser from real option
+		$opt = $parser;
+		$parser = $parse_href->{$opt};
+	    }
+
+	    if ($parser eq '') {
+		# Option does not take an argument
+		$opts{$opt} = 1;
+		next;
+	    }
+	}
+	$arg = shift(@_) if not defined $arg;
+	my $val = &$parser($arg, \%opts);
+	$opts{$opt} = $val if defined $val;
+    }
+    return (\%opts, @_);
+}
+push(@EXPORT, '&get_options');
+
+# Define result types for exported function - so that we can return results to
+# command line scripts.
+
+# !!! should these go into a module variable - that way modules don't need to
+# know their own name. Or just define their name ... that may be simpler.
+
+my %op_results = ();
+sub OpResult($) {
+    my ($opname) = @_;
+    return $op_results{$opname};
+}
+sub string_op($) {
+    my ($opname) = @_;
+    $op_results{$opname} = 'string';
+}
+sub boolean_op($) {
+    my ($opname) = @_;
+    $op_results{$opname} = 'boolean';
+}
+
+# Update modal flags - each arguments if a mode flag optionally followed
+# with "=" and a value. If no value is provided sets the flag to 1.
+
+sub SetFlags(@) {
+    foreach my $setting (@_) {
+	next if $setting eq "";
+
+	# get value for key (1 if not specified)
+	my ($key, $value) = ($setting, 1);
+	if ($setting =~ /(\w*)=(.*)/ ) {
+	    # Value specified for key.
+	    $key = $1;
+	    $value = $2;
+	}
+
+	die "unknown flag: $key\n" unless defined $flags{$key};
+	Debug("setting $key to $value");
+	$flags{$key} = $value;
+    }
+    SetBackground($flags{SYSLOG});
+    $update = not $flags{DRYRUN};
+
+    # Export new flags to environment
+    my @new_env = ();
+    foreach my $key (sort(keys(%flags))) {
+	push(@new_env, "$key=$flags{$key}") unless ($flags{$key} == 0);
+    }
+    my $flagstr = ":".join(':', @new_env).":";
+    $ENV{CF_FLAGS} = $flagstr;
+}
+
+# Try to find named progam in listed directory. Return full path of program
+# if succesful, otherwise throws an exception.
+
+sub FindProgram($@) {
+    my ($progname, @dirs) = @_;
+    my @endings = ($is_win) ? ('.exe', '.com', '.bat') : ('');
+    foreach my $dir (@dirs) {
+	foreach my $suffix (@endings) {
+	    my $path = $dir . "/$progname$suffix";
+	    Debug('trying (' . $dir . ') ' . $path);
+	    return $path if (-x $path && !(-d $path));
+	}
+    }
+    die "could not locate program $progname";
+}
+
+#-------
+# Path manipulation .. no longer used but should do something instead of the
+# current adhoc manipulation.
+
+sub GetPath() {
+    my $sep = ($is_win) ? ';' : ':';
+
+    return split($sep, $ENV{PATH});
+}
+
+sub PrependPath(@) {
+    my $sep = ($is_win) ? ';' : ':';
+
+    $ENV{PATH} = join($sep, @_) . $sep . $ENV{PATH};
+}
+
+# Convert native-OS or perl-style file path to cygwin-style path.
+
+sub CygPath($) {
+    my ($path) = @_;
+
+    if ($is_win) {
+	$path =~ s{\\}{/}g;
+	$path =~ s{^([a-zA-Z]):/}{/cygdrive/$1/};
+    }
+    return $path;
+}
+
+# Convert cygwin-style file path to perl-style path.
+
+sub UncygPath($) {
+    my ($path) = @_;
+
+    if ($is_win) {
+	# Replacing /cygdrive/*/ with *:/
+
+	$path =~ s{^/cygdrive/([a-zA-Z])/}{$1:/};
+
+	if ( $path =~ m{^/[^/]} ) {
+	    # Path is relative to UNIX (cygwin) root - prepend the root
+	    # directory.
+	    $path = $rootdir . $path;
+	}
+    }
+    return $path;
+}
+
+# Convert perl-style or cygwin-style file path to native OS file path.
+
+sub SysPath($) {
+    my ($path) = @_;
+
+    if ($is_win) {
+	$path = UncygPath($path);
+	$path =~ s{/}{\\}g;
+    }
+    return $path;
+}
+
+# Convert native OS file path to perl-style path (replace any backslashes
+# with forward slashes).
+
+sub UnsysPath($) {
+    my ($path) = @_;
+
+    if ($is_win) {
+	$path =~ s{\\}{/}g;
+    }
+    return $path;
+}
+
+#-------
+# Change tracking
+
+# Return boolean: 1 if in update mode, 0 if in dry-run mode.
+
+sub updating {
+    my ($optref) = get_options({max=>0}, @_);
+    return $update;
+}
+boolean_op('updating');
+
+# Get count of changes made so far. Handy to determine if system is actually
+# changed during a routine (compare change count from start and end).
+
+sub ChangeCount() {
+    return $change_count;
+}
+
+# Record that a configuration change has occured.
+
+sub MarkChange(@) {
+    Info(@_);
+    if ($change_count == 0 && defined $ENV{CF_SESSION}) {
+	# No changes in this process yet and in a multi-process
+	# configuration session.
+	# Increment the inter-process change counter. Note that the internal
+	# and external counters are not kept in sync - just need to
+	# increment the external one once if any changed are made in this
+	# process.
+	my $change_file = "$ENV{CF_SESSION}/changes";
+	my $session_changes = ReadFile($change_file)+1;
+	RealWriteFile($change_file, $session_changes);
+    }
+    $change_count++;
+}
+
+# Print count of config changes so far (or since prior invocation)
+
+sub changes {
+    my ($o, $initial) = get_options({}, @_);
+    $initial = 0 unless defined $initial;
+    my $session = GetSession();
+    my $changes = ReadFile("$session/changes");
+    return $changes-$initial;
+}
+push(@EXPORT, '&changes');
+string_op('changes');
+
+#-------
+# Module management
+
+# Hash of defined modules by name.
+my %modules = ();
+
+sub GetModule($) {
+    my ($modname) = @_;
+    return $modules{$modname} if defined $modules{$modname};
+
+    my $base = GetBase();
+    my $module;
+    if (-f "$base/$modname/configure.pl") {
+	$module = LoadPerlMod("$base/$modname/configure.pl");
+    } elsif (-x "$base/$modname/configure") {
+	$module = new Cf::ScriptModule($modname, "$base/$modname/configure");
+    } else {
+	die "unknown module: $modname (base=$base)\n";
+    }
+    $modules{$modname} = $module;
+    return $module;
+}
+
+sub CallModule($$@) {
+    my ($modname, $function, @args) = @_;
+    my $module = GetModule($modname);
+    return $module->call($function, @args);
+}
+
+# If specified file exists read simple config settings from the file (var=val)
+# a return list of alternative setting names and values.
+
+sub LoadVars($) {
+    my ($file) = @_;
+    return unless -f $file;
+    open(FILE, "<$file") or die "can't open $file: $!\n";
+    my @vals = ();
+    while (my $line = <FILE>) {
+	next if $line =~ /^\s*$/;	# Skip empty lines
+	next if $line =~ /^\s*#/;	# Skip comments
+	$line =~ s/[\cM\cJ]*$//;	# chomp() for any text format
+	my ($key, $val) = split('=', $line, 2);
+	push(@vals, $key, $val);
+    }
+    close(FILE) or die $!;
+    return @vals;
+}
+
+sub LoadPerlMod($) {
+    my ($script) = @_;
+    my $dir = dirname($script);
+    my $name = basename($dir);
+    my $host = Cf::GetHost();
+
+    my $package = "Cf::Module::$name";
+    my $module = new Cf::ModuleWrap($name, $package);
+
+    my $global_defs = "";
+    my %vars = (LoadVars("$dir/site.ini"),
+	    LoadVars("$dir/PERHOST/$host/host.ini"));
+    my $varnames = '$this_svc';
+    foreach my $key (keys(%vars)) {
+	$varnames .= ' $'.$key;
+	if ($key =~ /^svc_/) {
+	    $global_defs .= sprintf('$%s = Cf::GetModule(\'%s\');',
+		    $key, $vars{$key});
+	} else {
+	    $global_defs .= sprintf('$%s = \'%s\';', $key, $vars{$key});
+	}
+    }
+    eval "package $package;"
+	. 'import Cf;'
+	. "use vars qw($varnames);"
+	. '$this_svc = $module;'
+	. $global_defs
+	. Cf::ReadFile($script);
+    die "while loading $script: $@" if $@;
+    return $module;
+}
+
+# Make sure requested modules have been configured (if they haven't configure
+# them now)
+
+sub requiremodule {
+    my ($optref, @modules) = get_options({}, @_);
+    foreach my $module (@modules) {
+	GetModule($module)->require();
+    }
+}
+push(@EXPORT, '&requiremodule');
+
+# Configure all (appropriate) services
+sub all {
+    my ($optref) = get_options({}, @_);
+
+    # Make sure we have a session.
+    GetSession();
+
+    my $host = GetHost();
+    # !!! don't like this location for all services - invading the otherwise
+    # independent cf service
+    my $svfile = GetBase() . "/cf/PERHOST/$host/services";
+    die "no configuration defined for this host: $host\n" unless (-f $svfile);
+
+    Lock("all");
+
+    open(FILE, "<$svfile") or die $!;
+    my @svcs = <FILE>;
+    close(FILE) or die $!;
+    foreach my $svc (@svcs) {
+	$svc =~ s/[\cM\cJ]*$//;		# chomp() for any text format
+	GetModule($svc)->require();
+    }
+
+    Unlock("all");
+}
+
+
+#-------
+# Miscellaneous admin utilities.
+
+# Usage: DisplayMessage($message)
+# Display message box in background (spawn a separate process).
+# Windows only for now - do I want something similar for UNIX? Send mail to
+# logged in users instead (could extend to include people using various
+# services like samba ...)?
+
+sub DisplayMessage($) {
+    my $message = shift();
+    my $pobj;
+
+    Sendmail("cfengine notice", $message, LocalUsers());
+}
+
+
+my @users;
+sub LocalUsers() {
+    if (!scalar(@users)) {
+	if ($is_win) {
+	    require Win32::NetAdmin;
+	    Win32::NetAdmin::LoggedOnUsers('', \@users);
+	} else {
+	    my %uflag = ();
+	    foreach my $line (split("\n", ReadCommand("who"))) {
+		if ($line =~ /^(\w+)/) {
+		    $uflag{$1} = 1;
+		}
+	    }
+	    @users = keys(%uflag);
+	}
+    }
+    return @users
+}
+
+
+sub Sendmail($$@) {
+    require Mail::Sender;
+
+    my ($subject, $message, @recipients) = @_;
+    my $sender = new Mail::Sender( {smtp => 'mailhost'} );
+    die "Mail failed: $Mail::Sender::Error" if !ref($sender);
+
+    my $user = 'nobody';
+    foreach my $varname ('LOGNAME', 'USERNAME') {
+	if ($ENV{$varname}) {
+	    $user = $ENV{$varname};
+	    last;
+	}
+    }
+
+    # Send the mail.
+    my $result = $sender->MailMsg( {
+	    to => join(', ', @recipients),
+	    from => $user,
+	    subject => $subject,
+	    msg => $message,
+	    } );
+    die "Mail failed: $Mail::Sender::Error" if !ref($result);
+}
+
+
+#----------------------------------------------------------------------
+# Registry utility routines.
+
+if ($is_win) {
+    # MS-Windows
+
+    # Load registry.
+
+    require Win32;
+    require Win32::TieRegistry;
+    import Win32::TieRegistry(Delimiter => '/', SplitMultis => 1);
+}
+
+# Usage: Registry($keypath)
+# Get reference to named (relative to root) key in registry. Returns key
+# reference.
+
+sub Registry($) {
+    my $path = shift();
+
+    # I have to use the fully qualified name for Registry as it is
+    # dynamically imported - is there some way to avoid coding in the
+    # package name here?
+    my $key = $Cfscript::Registry->{$path} 
+	or die "can't open registry key, $path: $^E";
+
+    return $key;
+}
+
+# Usage: SetRegistry($key, $name, $value, $type)
+# Make sure registry item has specified value/type. Create ancestral subkeys
+# as required.
+# Returns 1 if registry is modified, 0 otherwise (either the registry
+# already contains the correct value or not in update mode).
+
+sub SetRegistry($$$$) {
+    my ($key, $name, $value, $type) = @_;
+    my $keypath = $key->Path();
+    my $message = "setting $keypath$name to ";
+    my ($delim) = $key->GetOptions('Delimiter');
+
+    # If registry type is dword, make sure value is hexadecimal formatted.
+
+    if ($type eq 'REG_DWORD' && $value !~ /^0x/) {
+	$value = sprintf("0x%4.4x", $value);
+    }
+
+    # Check if current value matches desired one - if so return, otherwise
+    # append to message saying what the new and old values are.
+
+    if ($type eq 'REG_MULTI_SZ') {
+	my $oldref = $key->{$name};
+	if (defined($oldref)) {
+	    return 0 if (join("\0", @{$value}) eq join("\0", @{$oldref}));
+	} else {
+	    $oldref = [];
+	}
+	$message .= "@{$value} ($type) (old was @{$oldref})";
+    } else {
+	my $old = $key->{$name};
+	if (defined($old)) {
+	    if ($type eq 'REG_DWORD') {
+		return 0 if ( hex($old) == hex($value) );
+	    } else {
+		return 0 if ( $old eq $value );
+	    }
+	} else {
+	    $old = '';
+	}
+	$message .= "$value ($type) (old was $old)";
+    }
+
+    # Split name into list of subkeys and the item name.
+
+    my @subkeys = split($delim, $name);
+    my $item = pop(@subkeys);
+
+    # Inform what keys will be created.
+
+    my $subpath = '';
+    foreach my $subkey (@subkeys) {
+	$subpath .= $subkey . $delim;
+	if ( !defined($key->{$subpath}) ) {
+	    MarkChange("creating registry key $keypath$subpath");
+	}
+    }
+    MarkChange($message);
+
+    return 0 unless ( $update );
+
+    foreach my $subkey (@subkeys) {
+	my $nextkey = $key->{"$subkey$delim"};
+	if (!defined($nextkey)) {
+	    $nextkey = $key->CreateKey($subkey)
+		    or die "failed to create registry key, $subkey: $^E";
+	}
+	$key = $nextkey;
+    }
+    $key->SetValue($item, $value, $type)
+	    or die "failed to set registry, $item/$value: $^E";
+    return 1;
+}
+
+# Usage: DeleteRegistry($key, $name)
+# Delete specified item from registry.  Returns 1 if registry is
+# modified, 0 otherwise (either the registry value did not exist,
+# or not in update mode).
+
+sub DeleteRegistry($$) {
+    my ($key, $name) = @_;
+
+    return 0 if !defined($key->{$name});
+
+    MarkChange("deleting ", $key->Path(), $name);
+
+    return 0 unless ( $update );
+    delete $key->{$name};
+    return 1;
+}
+
+# Usage: FlushRegistry($key)
+# Flush all registry updates, and perform a 'RegFlushKey' on the specified
+# registry key.
+
+sub FlushRegistry($) {
+    my ($key) = @_;
+
+    Debug("flushing ", $key->Path());
+    if ( $update ) {
+	$Cfscript::Registry->Flush();
+	$key->RegFlushKey();
+    }
+}
+
+
+#----------------------------------------------------------------------
+# Logging
+
+# Define whether we are logging to the system log (and how).
+
+sub SetBackground($%) {
+    my ($flag, %opts) = @_;
+    my $old = $background;
+    my $facility = $opts{SYSLOG_FACILITY} || 'user';
+
+    $flag = $flag ? 1 : 0;
+    if ($flag != $background) {
+	# Background status changed.
+
+	Debug("changing background to $flag");
+
+	if ($flag) {
+	    # Open connectio to system log - make sure to use unix domain
+	    # socket as secure configurations (redhat linux) default to
+	    # rejecting network log messages.
+
+	    Sys::Syslog::setlogsock('unix');
+	    openlog(basename($0), 'pid', $facility);
+	} else  {
+	    closelog();
+	}
+	$background = $flag;
+	Debug("background changed to $flag");
+    }
+    return $old;
+}
+
+# Log messages.
+
+sub Log ($$$@)
+{
+    my ($fh, $file_level, $priority, @msgs) = @_;
+    my $message = join('', @msgs);
+
+    my $maxlen = 900;
+    my @messages = ();
+
+    if ($background) {
+	# Write message to system log.
+
+	# Don't log if this is a dry-run.
+	return unless $update;
+
+	# Syslog splits messages over UDP packet length - split before
+	# ourselves so there is enough information to join them again
+
+	my $tail = $message;
+	while (length($tail) > $maxlen) {
+	    push(@messages, (substr($tail, 0, $maxlen) . "..."));
+	    $tail = ("..." . substr($tail, $maxlen));
+	}
+	push(@messages, $tail);
+
+	# I have occasional times when syslog will throw an exception - if it
+	# does fall back to writing to stdout/stderr.
+
+	eval {
+	    foreach my $submessage (@messages) {
+		syslog($priority, '%s', $submessage);
+	    }
+	};
+	return unless $@;
+	print(STDERR ":error:syslog failed:$@\n");
+    }
+    print($fh ":$file_level:$message\n");
+}
+
+sub Error {
+    Log(*STDERR, 'error', 'err', @_);
+}
+
+sub Warn {
+    Log(*STDERR, 'warn', 'warning', @_);
+}
+
+sub Info {
+    if ($flags{INFORM}) { Log(*STDERR, 'info', 'info', @_); }
+}
+
+sub Debug {
+    if ($flags{DEBUG}) { Log(*STDERR, 'debug', 'debug', @_); }
+}
+
+#----------------------------------------------------------------------
+# File utilities (internal) - don't obey operational modes, convergence,
+# or other nice policies.
+
+# Write content (with trailing newline) to a file.
+
+sub RealWriteFile($$) {
+    my ($path, $content) = @_;
+
+    RealMakeDir(dirname($path));
+    open(FILE, ">$path") or die "can't write to $path: $!\n";
+    print(FILE $content) or die $!;
+    if (length($content)) {
+	print(FILE "\n") or die $!;
+    }
+    close(FILE) or die $!;
+}
+
+# Recursive delete. Does not follow symlinks.
+
+sub RealRemoveTree($) {
+    my ($dir) = @_;
+
+    if ( (! -l $dir) && -d _ ) {
+	rmtree($dir, 0, 0);
+    } else {
+	unlink($dir);
+    }
+    die "can't remove $dir: $!" if (-l $dir || -e _);
+}
+
+sub RealMakeDir(@) {
+    foreach my $dir (@_) {
+	mkpath($dir);
+	die "can't create $dir: $!\n" unless (-d $dir);
+    }
+}
+
+# Read contents of named file, and return contents with trailing newline
+# removed.
+
+sub ReadFile {
+    my ($filename) = @_;
+    open(FILE, "<$filename") or die "can't open $filename: $!";
+    my $contents = join('', <FILE>) ;
+    close FILE;
+    chomp($contents);
+
+    return $contents;
+}
+
+sub TempName {
+    my ($dest) = @_;
+
+    die "empty destination for TempName()" unless (length($dest));
+
+    # Remove any trailing /s on path (so we can append to the basename)
+    $dest =~ s{/+$}{};
+    die "can't create temp for root directory\n" if $dest eq "";
+
+    my $path = "$dest-cfnew";
+
+    if ( -e $path ) {
+	# Temporary path already exists - remove it (assume it is from a
+	# prior aborted run ... is this reasonably safe?).
+	RemoveFile($path, 'BACKUP' => 'NONE');
+    }
+    return $path;
+}
+
+# Create an lock of specified name. Will be held until unlock,
+# the process exits, or time limit runs out.
+
+sub Lock($) {
+    my ($name) = @_;
+    my $now = time();
+    my $duration = 60*60;	# default to holding locks for an hour.
+
+    RealMakeDir($vardir);
+    my $lock = "$vardir/locks.lock";
+    my $map = "$vardir/locks";
+    my %lockmap;
+    open (LOCK, ">>$lock") or die "can't open $lock: $!\n";
+    flock(LOCK, LOCK_EX) or die "can't lock $lock $!\n";
+    tie(%lockmap, 'AnyDBM_File', $map, O_CREAT|O_RDWR, 0644)
+	    or die "can't open $map: $!\n";
+    eval {
+	if (defined $lockmap{$name}) {
+	    my ($lockpid, $locktime) = split(' ', $lockmap{$name});
+	    if ( kill(0, $lockpid) ) {
+		if ($locktime - $now > $duration) {
+		    Warn("breaking old lock $name from $lockpid");
+		} else {
+		    die "lock $name held by process $lockpid\n";
+		}
+	    }
+	}
+	$lockmap{$name} = "$PID $now";
+    };
+
+    # Clean up
+    untie %lockmap;
+    flock(LOCK, LOCK_UN) or die "can't unlock $lock $!\n";
+    close(LOCK) or die $!;
+
+    # Throw error if lock failed
+    die $@ if $@;
+}
+
+sub Unlock($) {
+    my ($name) = @_;
+
+    my $lock = "$vardir/locks.lock";
+    my $map = "$vardir/locks";
+    my %lockmap;
+    open (LOCK, ">>$lock") or die "can't open $lock: $!\n";
+    flock(LOCK, LOCK_EX) or die "can't lock $lock $!\n";
+    tie(%lockmap, 'AnyDBM_File', $map, O_CREAT|O_RDWR, 0644)
+	    or die "can't open $map: $!\n";
+    eval {
+	if (defined $lockmap{$name}) {
+	    my ($lockpid, $locktime) = split(' ', $lockmap{$name});
+	    if ($PID != $lockpid) {
+		die "can't unlock $name - held by process $lockpid\n";
+	    }
+	    delete $lockmap{$name};
+	}
+    };
+
+    # Clean up
+    untie %lockmap;
+    flock(LOCK, LOCK_UN) or die "can't unlock $lock $!\n";
+    close(LOCK) or die $!;
+
+    # Throw error if unlock failed
+    die $@ if $@;
+}
+
+# Backup specified file according provided options. Will use a hard link for
+# the backup if possible so link needs to be broken before updating path.
+# !!! May actually remove the location (if the target is a directory and the
+# backup area is in the same filesystem)
+#
+# Supported options:
+#
+#	BACKUPDIR	Where to store backups
+#
+#	BACKUP		Mode of backups:
+#
+#		ALL - keep backup of all versions of a path
+#		ORIGINAL - keep just the first version of a path
+#		LAST - keep just the most recent version
+#		NONE - don't keep any backups (BEWARE!)
+
+sub Backup($%) {
+    my ($path, %opts) = @_;
+    my $bdir = $opts{BACKUPDIR} || "$vardir/backup";
+    my $mode = $opts{BACKUP} || "ORIGINAL";
+
+    return if ($mode eq 'NONE');
+
+    my $finfo = GetFileInfo($path);
+    my $type = $finfo->type;
+    return if ($type eq 'NONE');
+    die "can't backup $type file: $path"
+	   if ($type ne 'FILE' && $type ne 'DIR' && $type ne 'LINK');
+
+    my $dirname = dirname($path);
+    my $basename = basename($path);
+
+    # Determine full path to backup directory
+    if (IsAbsolute($bdir)) {
+	# Nothing to do
+    } elsif ($bdir =~ m{\./(.*)}) {
+	# Relative path
+	$bdir = "$dirname/$1";
+    } else {
+	die "unrecognized format for BACKUPDIR: $bdir\n";
+	# !!! would be nice to have an option to save at base of filesystem
+    }
+
+    # Open and lock backup directory. Create directory if it doesn't exist.
+
+    RealMakeDir($vardir);
+    RealMakeDir($bdir);
+    my $log = "$vardir/backup.log";
+    my $map = "$vardir/backup.map";
+    my %pathmap;
+    open (BLOG, ">>$log") or die "can't open $log: $!\n";
+    flock(BLOG, LOCK_EX) or die "can't lock $log $!\n";
+    tie(%pathmap, 'AnyDBM_File', $map, O_CREAT|O_RDWR, 0644)
+	    or die "can't open $map: $!\n";
+
+    eval { BACKUP: {
+	# Determine backup path
+
+	my $bpath;
+	if ($mode eq 'LAST' ) {
+	    if (defined $pathmap{$path}) {
+		# Backup already exists for this path - reuse that backup
+		# location.
+		$bpath = $pathmap{$path};
+	    }
+	} elsif ($mode eq 'ORIGINAL' ) {
+	    # Skip if path has already been backed up.
+	    last BACKUP if (defined $pathmap{$path});
+	} elsif ($mode ne 'ALL') {
+	    die "unknown backup mode: $mode\n";
+	}
+
+	if (!defined $bpath) {
+	    # No backup path yet - get one that does not exist yet.
+
+	    my $base = "$bdir/$basename";
+	    $bpath = $base;
+	    my $count = 1;
+	    while (-e $bpath) {
+		# keep counting
+		$count += 1;
+		$bpath = "$base-$count"
+	    }
+	}
+
+	# !!! log file attributes? (permissions, file type and type
+	# specific info like target of symlink, major/minor of device)
+
+	# Do the backup
+
+	Debug("backing up $path to $bpath");
+
+	# Make sure nothing in the backup location
+	RealRemoveTree($bpath);
+
+	if ($type eq 'LINK') {
+	    # Really a link - nothing to backup.
+	} elsif ($type eq 'DIR') {
+	    # path is a directory
+
+	    if (!rmdir($path) ) {
+		# simple delete failed - directory probably not empty
+		# try moving it.
+
+		if (!rename($path, $bpath)) {
+		    # Can't move the directory - try archiving it.
+
+		    my $wd = cwd();
+		    chdir($dirname) or die "can't chdir to $dirname: $!";
+		    my $rc = system('tar', '-cf', $bpath, $basename);
+		    chdir($wd) or die "can't chdir to $wd: $!";
+
+		    die "backup tar failed: $?" unless $rc == 0;
+		}
+	    }
+	} else {
+	    # Normal file
+	    # Try doing the backup with a hard link unless the file already has
+	    # a hard link. If linking does not work just do a copy.
+
+	    if ($finfo->nlink != 1 || !link($path, $bpath)) {
+		File::Copy::copy($path, $bpath)
+		    or "failed to backup $path to $bpath: $!\n";
+	    }
+	}
+
+	# Log real path in backup directory
+	# !! should I write these before the actual backup to free up the
+	# locks?
+	# !! note that empty directories aren't really backed up like the
+	# log message implies
+	# Would like timestamp here
+	print BLOG "backing up $path to $bpath\n";
+	$pathmap{$path} = $bpath;
+    } };
+
+    # Clean up
+    untie %pathmap;
+    flock(BLOG, LOCK_UN) or die "can't unlock $log $!\n";
+    close(BLOG) or die $!;
+
+    # Throw error if backup failed
+    die $@ if $@;
+}
+
+# Move temp file into its permanent location. First check that the file has
+# the appropriate attributes (matching passed options).
+
+sub MoveTemp($$%) {
+    my ($tmp, $target, %opts) = @_;
+
+    # (Silently) set attributes of temp file.
+    my $inform = $flags{INFORM};
+    $flags{INFORM} = 0;
+    CheckFile($tmp, %opts, RECURSE=>0);
+    $flags{INFORM} = $inform;
+
+    Backup($target, %opts);
+    my $old;
+    if (-d $target && ! -l $target) {
+	# Target is a real directory - can't replace with rename. Move
+	# target out of the way and we will remove the tree after temp is in
+	# place.
+	$old = "$target-cfold";
+	RealRemoveTree($old) if (stat($old));
+	rename($target, $old) or die "can't move $target to $old: $!\n";
+    }
+    rename($tmp, $target) or die "can't move $tmp to $target: $!\n";
+    if ($old) {
+	RealRemoveTree($old);
+    }
+}
+
+sub CheckType($$%) {
+    my ($path, $desired_type, %opts) = @_;
+
+    my $type = GetFileInfo($path)->type;
+    if ( !$opts{CHANGE_TYPES} and ($type ne 'NONE')
+	    and ($type ne $desired_type) ) {
+	die "type mismatch, $path is $type (not $desired_type)\n";
+    }
+    return $type;
+}
+
+sub IsAbsolute($) {
+    my ($path) = @_;
+    if ($is_win) {
+	$path = UnsysPath($path);
+	return ( $path =~ m{^[A-Za-z]:/} || $path =~ m{^//} );
+    } else {
+	return ( $path =~ m{^/} );
+    }
+}
+# ???
+#sub is_absolute($) {
+#    return File::Spec->file_name_is_absolute(@_);
+#}
+
+sub AbsolutePath($;$) {
+    my ($path, $base) = @_;
+
+    return $path if (IsAbsolute($path));
+    $base = cwd() if not defined $base;
+    $path = $base . '/' . $path;
+    return $path;
+}
+
+
+
+# File Querying
+#
+# Want to cache file attributes - mostly for query network repositories and
+# for faking updates in dry run mode. Problem is ... don't want to
+# over-cache and get stale data.
+#
+# Also - don't want to load all cache attributes at the same time - 
+# checksum in particular
+
+
+struct( FileInfo => [
+	dev => '$',		# from stat
+	ino => '$',		# from stat
+	nlink => '$',		# from stat
+	uid => '$',		# from stat
+	gid => '$',		# from stat
+	size => '$',		# from stat
+	atime => '$',		# from stat
+	mtime => '$',		# from stat
+	ctime => '$',		# from stat
+	perm => '$',		# Permission bits from mode
+	type => '$',		# FILE, DIR, LINK or SPECIAL
+
+	linkdest => '$',	# destination of synbolic link
+	dir => '$',		# contents of directory - array ref
+	md5 => '$',		# MD5 checksum
+	] );
+
+# Stored file information, indexed by absolute (canonical) path
+my %file_info = ();
+
+sub ReadDir {
+    my ($path) = @_;
+    return @{$file_info{$path}->dir} if (defined $file_info{$path});
+
+    my @children;
+    my $child;
+
+    opendir(DIR, $path) or die "$!: $path\n";
+    while ( defined($child = readdir(DIR)) && $child =~ /^\.\.?$/ ) {
+	# Keep on reading
+    }
+    if ( $child ) {
+	push(@children, $child, readdir(DIR));
+    }
+    closedir(DIR);
+
+    return @children;
+}
+
+sub ReadLink ($) {
+    my ($path) = @_;
+
+    return $file_info{$path}->linkdest if (defined $file_info{$path});
+    return readlink($path);
+}
+
+sub MD5 ($) {
+    my ($path) = @_;
+    return $file_info{$path}->md5 if (defined $file_info{$path});
+
+    require Digest::MD5;
+
+    open(FILE, $path) or die $!;
+    binmode(FILE);
+    my $sum = Digest::MD5->new->addfile(*FILE)->digest;
+    close(FILE);
+    return $sum;
+}
+
+sub GetFileInfo($) {
+    my ($path) = @_;
+
+    return $file_info{$path} if (defined $file_info{$path});
+    my $info = new FileInfo;
+    my @st = stat($path);
+    if (!@st) {
+	$info->type('NONE');
+	return $info
+    }
+
+    my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
+	  $atime,$mtime,$ctime,$blksize,$blocks) = lstat($path);
+
+    $info->dev($dev);
+    $info->ino($ino);
+    $info->nlink($nlink);
+    $info->uid($uid);
+    $info->gid($gid);
+    $info->size($size);
+    $info->atime($atime);
+    $info->mtime($mtime);
+    $info->ctime($ctime);
+
+    $info->perm($mode & 07777);
+    if (-l _) {
+	$info->type('LINK');
+    } elsif ( -f _ ) {
+	$info->type('FILE');
+    } elsif ( -d _ ) {
+	$info->type('DIR');
+    } else {
+	$info->type('SPECIAL');
+    }
+
+    return $info
+}
+
+# Convert glob pattern to corresponding regular expression.
+sub glob2pat {
+    my $globstr = shift;
+    my %patmap = (
+	'%' => '.*',
+	'*' => '[^/]*',
+	'?' => '[^/]',
+	'[' => '[',
+	']' => ']',
+    );
+    $globstr =~ s{(.)} { $patmap{$1} || "\Q$1" }ge;
+    return '^' . $globstr . '$';
+}
+
+# Pattern matching flags for file include/exclude lists
+my $EX_FULLPATH = 1;	# Match against full path (default is to just match
+			# against the base file name)?
+my $EX_INCLUDE = 2;	# Include matching paths (default is to exclude)?
+
+# Generate match item for glob pattern - if the pattern contains a / then
+# adds the fullpath matching flag automatically.
+sub GlobMatch($$) {
+    my ($glob,$flags) = @_;
+    $flags |= $EX_FULLPATH if ($glob =~ m{/});
+    return ($flags, glob2pat($glob));
+}
+
+# Generate a match item that excludes files matching a glob pattern.
+sub ExGlob($) { return GlobMatch($_[0], 0) }
+
+# Generate a match item that includes files matching a glob pattern.
+sub InGlob($) { return GlobMatch($_[0], $EX_INCLUDE) }
+
+# Check if file path is excluded my a match list. The match list is a
+# (reference to) a list of alternating match flags (see $EX_* values defined
+# above) and regular expression patterns.
+
+sub IsExcluded($$;$) {
+    my ($matches_ref, $path, $default)  = @_;
+    $default = 0 if !defined $default;
+    my $base = basename($path);
+
+    my $len = @{$matches_ref};
+    for (my $i=0; $i < $len; $i += 2) {
+	my $flags = @{$matches_ref}[$i];
+	my $re = @{$matches_ref}[$i+1];
+
+	my $match;
+	if ($flags & $EX_FULLPATH) {
+	    $match = $path =~ /$re/;
+	} else {
+	    $match = $base =~ /$re/;
+	}
+	if ($match) {
+	    my $result = ($flags & $EX_INCLUDE) ? 0 : 1;
+	    Debug($result ? "excluding $path" : "including $path");
+	    return $result;
+	}
+    }
+    # No match - return default.
+    return $default;
+}
+
+# Given system ticks of an event return how many days ago it happened.
+
+my $secs_per_day = 60*60*24;
+sub Age($) {
+    my ($when) = @_;
+    return ((time() - $when)/$secs_per_day);
+}
+
+#----------------------------------------------------------------------
+# (safe) System modifying routines.
+
+=pod
+
+=item CheckFile(path [, option => value ..])
+
+Verify that specified file matches criteria in options.
+
+    OWNER
+    GROUP
+    MODE
+
+Also obeys the following options when checking
+
+    SKIP_MISSING
+    FOLLOW_LINKS
+    RECURSE
+
+=cut
+
+sub CheckFile($%) {
+    my ($path, %opts) = @_;
+    my $fi = GetFileInfo($path);
+    my $is_link = ($fi->type eq 'LINK');
+
+    if ($fi->type eq 'NONE') {
+	# File does not exist
+	# !!! ignoring in dryrun mode ... ideally should keep track of
+	# created files and would verify that prior step would have created
+	# the file.
+	return if $opts{SKIP_MISSING} or !$update;
+	die "file does not exist: $path";
+    }
+
+    return if ($is_link && !$opts{'FOLLOW_LINKS'});
+    Debug("checking $path");
+
+    if (!$is_link) {
+	if (defined $opts{'OWNER'}) {
+	    # check owner of file
+
+	    my $user = $opts{'OWNER'};
+	    my $uid;
+
+	    if ( $user =~ /^[0-9]+$/ ) {
+		# User specified as uid.
+
+		$uid = $user;
+	    } else {
+		# Assume user specified by name - look up id.
+		# Lookup allowed to fail in nonupdate mode - assume that user
+		# would have been created in an earlier step.
+
+		my @fields = getpwnam($user);
+		die "user $user unknown" unless (@fields || (!$update));
+		$uid = $fields[2];
+	    }
+	    Debug("checking $path owner is $user ($uid), old is " . $fi->uid);
+	    if ($uid != $fi->uid) {
+		MarkChange("setting owner of $path to $user");
+		if ($update) {
+		    chown($uid, -1, $path) or die $!;
+		    $fi = GetFileInfo($path);
+		}
+	    }
+	}
+	if (defined $opts{'GROUP'}) {
+	    # check group of file
+
+	    my $group = $opts{'GROUP'};
+	    my $gid;
+
+	    if ( $group =~ /^[0-9]+$/ ) {
+		# User specified as gid.
+
+		$gid = $group;
+	    } else {
+		# Assume group specified by name - look up id.
+		# Lookup allowed to fail in nonupdate mode - assume group
+		# would have been created in an earlier step.
+
+		my @fields = getgrnam($group);
+		die "group $group unknown" unless (@fields or (!$update));
+		$gid = $fields[2];
+	    }
+	    Debug("checking $path group is $group ($gid), old is " . $fi->gid);
+	    if ($gid != $fi->gid) {
+		MarkChange("setting group of $path to $group");
+		if ($update) {
+		    chown(-1, $gid, $path) or die $!;
+		    $fi = GetFileInfo($path);
+		}
+	    }
+	}
+	#!!! collapse the two chown() calls into one if possible?
+
+	if (defined $opts{'MODE'}) {
+	    # check mode (permissions) of file
+
+	    my $mode = $opts{'MODE'};
+	    if ($mode =~ /^\d/) {
+		# Numeric mode. Convert from octal if it has a leading 0.
+		$mode = oct($mode) if $mode =~ /^0/;
+	    } else {
+		# Symbolic mode.
+		require File::chmod;
+
+		# If DEBUG is on then includes bogus permission validation - so
+		# disable (on by default)
+		$File::chmod::DEBUG = 0;
+		$File::chmod::UMASK = 0;
+
+		($mode) = File::chmod::getchmod($mode, $path);
+	    }
+	    my $mode_str = sprintf("%04o", $mode);
+	    Debug("checking $path mode is $mode_str");
+	    if ($mode != ($fi->perm) ) {
+		MarkChange("setting mode of $path to $mode_str");
+		if ($update) {
+		    chmod($mode, $path) or die $!;
+		}
+	    }
+	}
+    }
+
+    # Check children if this is a directory and recursion was requested.
+
+    if ($fi->type eq 'DIR' && $opts{'RECURSE'} ) {
+	$opts{'RECURSE'}--;
+	my @args = %opts;
+	foreach my $file ( ReadDir($path) ) {
+	    CheckFile("$path/$file", @args);
+	}
+    }
+}
+
+sub RemoveFile {
+    my ($path, %opts) = @_;
+
+    my $fi = GetFileInfo($path);
+    return if ($fi->type eq 'NONE');
+
+    MarkChange("removing $path");
+
+    return unless ($update);
+
+    Backup($path, %opts);
+    RealRemoveTree($path);
+}
+
+sub CopyFile {
+    my ($srcpath, $destpath, %opts) = @_;
+    my $compare = $opts{COPY_MODE} || $flags{COPY_MODE};
+    my $newtime = $opts{NEW_TIME};
+    $newtime = $flags{NEW_TIME} unless defined $newtime;
+
+    my $si = GetFileInfo($srcpath);
+    my $di = GetFileInfo($destpath);
+
+    if (!defined $opts{MODE}) {
+	# Mode not explicity set for copy - use source permissions but apply
+	# umask.
+	$opts{MODE} = ($si->perm & ~umask());
+    }
+
+    # Check if source and destination differ - first compare file sizes for
+    # a real quick check.
+
+    my $same = ( $di && $si->size == $di->size );
+    if ($same) {
+	if ( $compare eq 'md5' ) {
+	    $same = (MD5($srcpath) eq MD5($destpath));
+	} elsif ( $compare eq 'mtime' ) {
+	    if ($newtime) {
+		$same = ($si->mtime < $di->mtime);
+	    } else {
+		$same = ($si->mtime == $di->mtime);
+	    }
+	} elsif ( $compare eq 'binary' ) {
+	    $same = (compare($srcpath, $destpath) == 0);
+	} else {
+	    die "unknown comparison method: $compare";
+	}
+    }
+
+    if ($same) {
+	# File content matches, make sure options match then return.
+	# !!! if we are keeping permissions then need to take source
+	# permissions into account here!
+	CheckFile($destpath, %opts, RECURSE => 0) if (scalar(%opts));
+	return;
+    }
+
+    MarkChange("copying $srcpath to $destpath");
+    return unless ($update);
+
+    # Make sure parent directories of $destpath exist
+    my $parent = dirname($destpath);
+    MakeDir($parent);
+
+    # Safe copy (copy to temp and then move into place)
+
+    my $temp = TempName($destpath);
+
+    eval {
+	if ($opts{REMOTE_SRC}) {
+	    geturl($srcpath, $temp);
+	} else {
+	    File::Copy::copy($srcpath, $temp)
+		or die "can't copy from $srcpath: $!\n";
+	}
+    };
+    if ($@) {
+	unlink($temp);
+	die $@;
+    }
+
+    # !!! verify copy? check size? check content?
+
+    unless ($newtime) {
+	my $mtime = $si->mtime;
+	utime(time(), $mtime, $temp) or die "can't set time on $temp";
+    }
+
+    MoveTemp($temp, $destpath, %opts);
+}
+
+# Set modification time of file to now (create file if necessary).
+
+sub TouchFile($%) {
+    my ($file, %opts) = @_;
+    if (-e $file) {
+	# File exists, update mtime.
+	MarkChange("touching $file");
+	return if (!$update);
+
+	my $now = time;
+	utime($now, $now, $file) or die $!;
+	CheckFile($file, %opts) if (scalar(%opts));
+    } else {
+	# No file, create empty one.
+	WriteFile($file, "", %opts);
+    }
+}
+
+# Create/replace $filename with data in $content - appends a newline.
+
+sub WriteFile {
+    my ($destpath, $content, %opts) = @_;
+
+    if ( -f $destpath ) {
+	my $oldcontent = ReadFile($destpath);
+	if ($content eq $oldcontent) {
+	    CheckFile($destpath, %opts) if (scalar(%opts));
+	    return;
+	}
+    }
+
+    MarkChange("writing $destpath");
+    return unless ($update);
+
+    # Make sure parent directories of $destpath exist
+    my $parent = dirname($destpath);
+    MakeDir($parent);
+
+    my $temp = TempName($destpath);
+    RealWriteFile($temp,$content);
+    MoveTemp($temp, $destpath, %opts);
+}
+
+sub MakeLink {
+    my ($src, $dest, %opts) = @_;
+
+    my $desttype = CheckType($dest, 'LINK', %opts);
+    Debug("$dest is $desttype");
+    if ($desttype eq 'LINK') {
+	return if (ReadLink($dest) eq $src);
+    }
+
+    MarkChange("linking $dest -> $src");
+
+    # Just print?
+    return unless ($update);
+
+    my $temp = TempName($dest);
+    symlink($src, $temp) or die $!;
+    MoveTemp($temp, $dest);
+}
+
+# Synchronize contents of two directories.
+
+sub DirSync {
+    my ($srcdir, $destdir, @args) = @_;
+    my %opts = @args;
+    my %src_exists = ();
+
+    foreach my $file ( ReadDir($srcdir) ) {
+	FileSync("$srcdir/$file", "$destdir/$file", @args);
+	$src_exists{$file} = 1;
+    }
+
+    if ($opts{'PURGE'}) {
+	# Remove extraneous files from destination.
+
+	foreach my $file ( ReadDir($destdir) ) {
+	    if ( !$src_exists{$file} ) {
+		RemoveFile("$destdir/$file", @args);
+	    }
+	}
+    }
+}
+
+# Dereference link (recursively) to get to the real target.
+
+sub FollowLinks($) {
+    my ($target) = @_;
+    
+    my $count = 0;
+    my $path = $target;
+    while (GetFileInfo($path)->type eq 'LINK') {
+	die "too many links (loop?): $target\n" if ($count++ == $max_links);
+	my $newpath = ReadLink($path) or die $!;
+	$path = AbsolutePath($newpath, dirname($path))
+    }
+    return $path;
+}
+
+#----------------------------------------------------------------------
+# Simple network encoding
+# Basically URL encoding? (but don't want dependency on full URL module).
+
+my %char2hex = ();
+my %hex2char = ();
+foreach my $byte (0 .. 255) {
+    my $char = sprintf("%c", $byte);
+    my $hex = sprintf("%02x", $byte);
+    $char2hex{$char} = $hex;
+    $hex2char{$hex} = $char;
+}
+sub Encode($) {
+    my ($str) = @_;
+    $str =~ s/[^[:alnum:]-_\/\.]/%$char2hex{$&}/g;
+    return $str;
+}
+sub Decode($) {
+    my ($str) = @_;
+    $str =~ s/%(..)/$hex2char{$1}/g;
+    return $str;
+}
+
+#----------------------------------------------------------------------
+# External routines (exported to scripts)
+
+sub MakeDir {
+    my ($path, %opts) = @_;
+
+    my $path = FollowLinks($path);
+    my $oldtype = CheckType($path, 'DIR', %opts);
+    if ($oldtype eq 'DIR') {
+	# Directory already exists, make sure options match then return.
+	CheckFile($path, %opts, RECURSE => 0) if (scalar(%opts));
+	return;
+    }
+    MarkChange("creating directory $path");
+
+    # Just print?
+    return unless ($update);
+
+    my $temp = TempName($path);
+    RealMakeDir($temp);
+    MoveTemp($temp, $path, %opts);
+}
+
+# Retrieve document from URL - if destination specified then write to that
+# file (always - does not follow safe rules). Otherwise return document to
+# caller. Throws an exception if the document cannot be retrieved.
+
+my $geturl_ref;
+my $lwp_ua;
+sub geturl {
+    my ($optref, $url, $dest) = get_options({}, @_);
+
+    if (not defined $geturl_ref) {
+	eval {
+	    require LWP::UserAgent;
+	    require HTML::HeadParser;	# Some boxes are missing this module
+	    				# which causes LWP to fail later.
+	};
+	if ($@) {
+	    # No LWP - fall back to curl
+	    $geturl_ref = \&GeturlCurl;
+	} else {
+	    $geturl_ref = \&GeturlLwp;
+	    $lwp_ua = LWP::UserAgent->new;
+	}
+    }
+    $geturl_ref->($url, $dest);
+}
+string_op("geturl");
+
+sub GeturlLwp($;$) {
+    my ($url, $dest) = @_;
+    Debug("downloading $url");
+    my $req = HTTP::Request->new(GET => $url);
+    my $res;
+    if (defined $dest) {
+	$res = $lwp_ua->request($req, $dest);
+    } else {
+	$res = $lwp_ua->request($req);
+    }
+    die "failed to get $url: ".$res->code if $res->is_error();
+    return $res->content unless defined $dest;
+}
+
+
+sub GeturlCurl($;$) {
+    my ($url, $dest) = @_;
+    my $command = "curl -fsS $url";
+
+    Debug("curling $url");
+
+    # Could do just - but that allows the shell to invade:
+    #my $pid = open(PIPE, "$command|");
+
+    my $pid = open(PIPE, "-|");
+    if ($pid == 0) {
+	# child
+	exec('curl', '-fsS', $url) or die "can't exec curl: $!";
+	# NOTREACHED
+    }
+    # Parent
+
+    die "command ($command) failed: $!" unless $pid;
+
+    my $buffer = '';
+    my $bufsize = 8*1024;
+    my $content = '';
+    if (defined $dest) {
+	# Direct content to file.
+	open(OUT, ">$dest") or die "can't write to $dest: $!";
+	while (sysread(PIPE, $buffer, $bufsize)) {
+	    print OUT $buffer or die $!;
+	}
+	close(OUT) or die $!;
+    } else {
+	# Capture content to return to caller.
+	while (sysread(PIPE, $buffer, $bufsize)) {
+	    $content .= $buffer;
+	}
+    }
+
+    close(PIPE) or die "command ($command) failed: $!";
+    return $content unless defined $dest;
+}
+
+sub MakeTOC($) {
+    my ($dir) = @_;
+    my $header = "# cftoc 1.0";
+    $dir = AbsolutePath($dir);
+    my @lines = ();
+    my %dirlines = ();
+
+    sub TocEntry {
+	my $basename = $_;
+	return if $basename eq '.cftoc';
+
+	my $relpath = $File::Find::name;
+	my $dirpath = $File::Find::dir;
+	# Trim off leading "." when joining with relative path
+	my $path = $dir . substr($relpath, 1);
+	my $fi = GetFileInfo($basename);
+	my @opts = ();
+
+	if ($fi->type eq 'DIR') {
+	    my $toc = "$header\n";;
+	    if (defined $dirlines{$relpath}) {
+		$toc .= join("\n", @{$dirlines{$relpath}});
+		delete $dirlines{$relpath};
+	    }
+	    WriteFile("$path/.cftoc", $toc);
+	}
+
+	# Try to convert user and group ids to names.
+	my $user = $fi->uid;
+	if (my @ufields = getpwuid($user)) {
+	    $user = $ufields[0];
+	}
+	my $group = $fi->gid;
+	if (my @gfields = getgrgid($group)) {
+	    $group = $gfields[0];
+	}
+
+	if ($fi->type eq 'LINK') {
+	    push(@opts, "link=".Encode(ReadLink($path)));
+	}
+
+	my $attrs = join(' ',
+		$fi->type,
+		$fi->size,
+		$fi->mtime,
+		$fi->perm,
+		$user,
+		$group,
+		@opts);
+	push(@lines, (Encode($relpath).' '.$attrs));
+	push(@{$dirlines{$dirpath}}, (Encode($basename).' '.$attrs));
+    }
+
+    my $wd = cwd();
+    chdir($dir) or die "can't chdir to $dir: $!\n";
+    finddepth({wanted =>\&TocEntry}, '.');
+    chdir($wd) or die "can't chdir to $wd: $!\n";
+
+    # Write master in reverse order to convert depth-first search to
+    # breadth-first (so that directories precede their children).
+    WriteFile("$dir.toc", join("\n", $header, reverse(@lines)));
+}
+
+sub LoadTOC($) {
+    my ($url) = @_;
+
+    my $toc = geturl("$url.toc");
+
+    # !!! Check signature?
+
+    die "unknown directory format for $url\n"
+	    unless $toc =~ /^# cftoc 1.0/;
+
+    # Load directory into file info cache
+
+    my ($urlbase, $urldir) = fileparse($url);
+
+    my $count = 0;
+    foreach my $line (split("\n", $toc)) {
+	next if $line =~ /^#/;
+	next if $line =~ /^\s*$/;
+	my ($epath, $type, $size, $mtime, $perm, $user, $group, @opts)
+		= split(' ', $line);
+
+	my $path = Decode($epath);
+
+	# Concatenate path with url, but get rid of any "." in the middle.
+	my $fullpath;
+	if ($path eq '.') {
+	    $fullpath = $url;
+	} elsif ($path =~ m{^\./}) {
+	    $fullpath = $url . substr($path, 1);
+	} else {
+	    $fullpath = "$url/$path";
+	}
+
+	my $fi = new FileInfo;
+	$fi->type($type);
+	$fi->size($size);
+	$fi->mtime($mtime);
+	$fi->perm($perm);
+
+	my @ufields = getpwnam($user);
+	$fi->uid($ufields[2]) if (@ufields);
+	my @gfields = getgrnam($group);
+	$fi->gid($gfields[2]) if (@gfields);
+
+	if ($type eq 'DIR') {
+	    $fi->dir([]);
+	}
+
+	# Add optional file attributes that we understand.
+	foreach my $opt (@opts) {
+	    my ($key, $val) = split('=', $opt, 2);
+	    if ($key eq 'link') {
+		$fi->linkdest(Decode($val));
+	    } elsif ($key eq 'md5') {
+		$fi->md5($val);
+	    }
+	}
+
+	$file_info{$fullpath} = $fi;
+	Debug("added TOC entry for $fullpath");
+	$count++;
+
+	# Append this item to the parent's directory listing.
+	my $dir = dirname($fullpath);
+	if (defined $file_info{$dir}) {
+            # Parent directory is in cache - append this item to the
+            # parent's directory listing.
+            push(@{$file_info{$dir}->dir}, basename($path));
+        }
+    }
+    Debug("loaded toc for $url, $count entries");
+}
+
+# Remove matching files.
+
+sub Tidy ($%) {
+    my ($path, %opts) = @_;
+
+    Debug("tidying $path");
+
+    my $fi = GetFileInfo($path);
+    my $newpath = $path;
+    if ($fi->type eq 'LINK' && $opts{FOLLOW_LINKS}) {
+	$newpath = FollowLinks($path);
+	$fi = GetFileInfo($newpath);
+    }
+    my $ftype = $fi->type;
+    return if ($ftype eq 'NONE');
+    
+    unless ($opts{EXCLUDE} && IsExcluded($opts{EXCLUDE}, $path, 1)
+	    || $opts{ATIME} && Age($fi->atime) < $opts{ATIME}
+	    || $opts{CTIME} && Age($fi->ctime) < $opts{CTIME}
+	    || $opts{MTIME} && Age($fi->mtime) < $opts{MTIME}
+	    ) {
+	# File passes match list
+	if ($ftype ne 'DIR' || $opts{RMDIR}) {
+	    # File is not a directory, or directory removal is allowed.
+	    RemoveFile($path, %opts);
+	    return;
+	}
+    }
+
+    if ($ftype eq 'DIR') {
+	# Check children.
+	if ( $opts{'RECURSE'} ) {
+	    $opts{'RECURSE'}--;
+	    foreach my $file ( ReadDir($path) ) {
+		Tidy("$path/$file", %opts);
+	    }
+	}
+    }
+}
+
+# Make sure file contains specified line - replacing any lines that matches
+# specified pattern.
+
+sub SetLine($$$%) {
+    my ($path, $pattern, $line, %opts) = @_;
+
+    die "desired line ($line) does not match pattern ($pattern)\n"
+	    unless $line =~ $pattern;
+
+    # Make sure pattern will match an entire line - so we can use it to
+    # substitute in the new line
+    $pattern .= '.*' unless (substr($pattern, -1, 1) eq '$');
+    $pattern = ".*$pattern" unless (substr($pattern, 0, 1) eq '^');
+
+    Debug("check that $path has $line (pattern=$pattern)");
+
+    my $orig = ReadFile($path);
+    my $new = $orig;
+    my $subs = ($new =~ s/$pattern/$line/mg);
+    if ($subs == 0) {
+	$new .= "\n" . $line;
+	MarkChange("adding $line to $path");
+    } elsif ($subs == 1) {
+	return if ($new eq $orig);
+	MarkChange("changing $pattern to $line in $path");
+    } else {
+	die "setline failed: $subs lines matched $pattern in $path\n";
+    }
+    WriteFile($path, $new, %opts);
+}
+
+sub setline {
+    my ($optref, $path, $pattern, $line) = get_options(\%parse_opt, @_);
+    SetLine($path, $pattern, $line, %{$optref});
+}
+push(@EXPORT, '&setline');
+
+# Synchronize to catalogued network volume
+
+sub RemoteSync($$%) {
+    my ($srcpath, $destpath, %opts) = @_;
+
+    LoadTOC($srcpath);
+    FileSync($srcpath, $destpath, %opts, REMOTE_SRC=>1);
+}
+
+# Make $destpath have the same contents as $srcpath.
+
+sub FileSync {
+    my ($srcpath, $destpath, %opts) = @_;
+
+    Debug("syncing $srcpath to $destpath");
+    my $si = GetFileInfo($srcpath);
+    if ($opts{EXCLUDE} && IsExcluded($opts{EXCLUDE}, $srcpath)) {
+	$si->type('NONE');
+    }
+    my $newsrcpath = $srcpath;
+    if ($si->type eq 'LINK' && $opts{FOLLOW_LINKS}) {
+	$newsrcpath = FollowLinks($srcpath);
+	$si = GetFileInfo($newsrcpath);
+    }
+
+    my $srctype = $si->type;
+    my $di = GetFileInfo($destpath);
+    my $desttype = $di->type;
+
+    # !!! do I really want to enforce absolute paths?
+#    IsAbsolute($srcpath) or die "file path is not absolute: $srcpath";
+#    IsAbsolute($destpath) or die "file path is not absolute: $destpath";
+
+    die "syncing onto self: $srcpath and $destpath\n"
+	    if (defined $di->dev
+		&& $si->dev == $di->dev
+		&& $si->ino == $di->ino);
+
+    if ($srctype eq 'NONE') {
+	# Source does not exist
+	if ($desttype ne 'NONE') {
+	    # Destination does exist - are we allowed to delete it?
+
+	    if ($opts{'PURGE'}) {
+		RemoveFile($destpath, %opts);
+	    } elsif (! $opts{SKIP_MISSING}) {
+		die "source does not exist: $srcpath\n";
+	    }
+	}
+	return;
+    } elsif ( !$opts{CHANGE_TYPES}
+	    && ($desttype ne 'NONE')
+	    && ($srctype ne $desttype)
+	    ) {
+	die "type mismatch, $srcpath is $srctype and $destpath is $desttype";
+    }
+
+
+    # Make sure parent directories of $destpath exist
+
+    my $parent = dirname($destpath);
+    MakeDir($parent);
+
+    if ($srctype eq 'LINK') {
+	my $target = ReadLink($srcpath) or die $!;
+	# !!! how should relative links be handled?
+	die "syncing relative links is not implemented yet"
+		unless IsAbsolute($target);
+	MakeLink($target, $destpath);
+
+	# No need to set permissions on link
+	return
+    } elsif ($srctype eq 'DIR') {
+	if ($desttype ne 'DIR') {
+	    # !!! need to make sure chmod a+X gets performed on directory?
+	    MakeDir($destpath, %opts);
+	}
+	if ( $opts{'RECURSE'} ) {
+	    $opts{'RECURSE'}--;
+	    DirSync($srcpath, $destpath, %opts);
+	}
+    } elsif ($srctype eq 'FILE') {
+	CopyFile($newsrcpath, $destpath, %opts);
+    } else {
+	die "file type $srctype not supported: $srcpath";
+    }
+
+    # Set permissions here!!!
+}
+
+# Change user and set environment appropriately - analogous to running
+# "su user".
+
+sub BecomeUser($) {
+    my ($user) = @_;
+
+    my @ufields;
+    if ( $user =~ /^[0-9]+$/ ) {
+	@ufields = getpwuid($user) or die "user $user unknown";
+    } else {
+	@ufields = getpwnam($user) or die "user $user unknown";
+    }
+    my ($login, $pass, $uid, $gid, $quota, $comment, $gcos, $home, $shell)
+	    = @ufields;
+
+    # Determine all group memberships of user (to add all valid group rights
+    # like the C library initgroups(3) does)
+    #
+    # Initialize list with two entries for default group of user - that way if
+    # user has no other group member ships all root's effective group
+    # memberships will be removed.
+
+    my @groups = ($gid, $gid);
+    setgrent();
+    while( my ($gname, $gpasswd, $gid2, $members) = getgrent() ) {
+	foreach my $member (split(' ', $members)) {
+	    if ($member eq $user) {
+		push(@groups, $gid2);
+		last;
+	    }
+	}
+    }
+
+    # Set real, effective, and supplementary group access list to the
+    # appropriate groups for nguser.
+
+    ($(, $)) = ($gid, join(' ', @groups));
+
+    # Change real and effective user ID.
+    # Perl is showing its true obscure syntax here.
+
+    ($<, $>) = ($uid, $uid);
+
+    # Initialize environment.
+
+    $ENV{'HOME'} = $home;
+    $ENV{'LOGNAME'} = $user;
+}
+
+# Run command as specified user. Throws exception if command fails.
+
+sub RunAsUser($@) {
+    my ($user, @args) = @_;
+
+    my $cmd = join(' ', @args);
+    MarkChange("running as $user: $cmd\n");
+    return unless ($update);
+
+    my $pid = fork();
+    if (! defined $pid) {
+	die "can't fork: $!";
+    }
+    if ($pid) {
+	# This is the parent - wait for child.
+
+	waitpid($pid, 0);
+	die "run failed ($?): $cmd\n" if $?;
+    } else {
+	# This is the child.
+
+	BecomeUser($user) if length($user);
+	exec(@args) or die $!;
+    }
+}
+
+# Run specified command and throw error if it fails (returns non-zero status
+# code). This is for commands with side effects - it won't actually be run
+# if we are in no update mode.
+
+sub Run(@) {
+    my $cmd = join(' ', @_);
+
+    MarkChange("running: $cmd\n");
+    return unless ($update);
+
+    my $pid = open3(*INPIPE, *PIPE, '', $cmd);
+    while (my $line = <PIPE>) {
+	chomp($line);
+	Info($line) if ($line =~ /\S/);
+    }
+    close(PIPE) or die $!;
+    close(INPIPE) or die $!;
+    waitpid($pid, 0);
+    die "run failed ($?): $cmd\n" if $?;
+}
+
+# Run command and return the output. Throw error if it fails. This command
+# should not have any side effects as it WILL be run in no-update mode.
+
+sub ReadCommand($) {
+    my ($command) = @_;
+    my $buffer = '';
+    my $maxsize = 100000;
+    open(PIPE, "$command |") or die $!;
+    read(PIPE, $buffer, $maxsize);
+    close(PIPE) or die "command failed $!: $command";
+    return $buffer;
+}
+
+# Get short hostname of this machines.
+# Eventually allow sites to includes some domain components in this host
+# name? (so that site could have multiple domains and hosts are only unique
+# within a domain)
+
+my $short_host;
+sub GetHost() {
+    if (! defined $short_host) {
+	require Sys::Hostname;
+	$short_host = Sys::Hostname::hostname();
+	$short_host =~ s/\..*//;
+    }
+    return $short_host;
+}
+
+# Determine base of configuration script/module tree
+
+sub GetBase() {
+    my $base = $ENV{CF_BASEDIR};
+    if (not defined $base) {
+	# Initialize environment for cross-script configuration
+
+	# First look for config services (modules) parallel to this script
+	$base = dirname(AbsolutePath($scriptdir));
+	if (! -f "$base/relnum") {
+	    # No services parallel to script - use the default location
+	    $base = "/var/lib/cf/inputs";
+	}
+	$ENV{CF_BASEDIR} = $base ;
+    }
+    return $base;
+}
+
+# Get path to session state files. Create new session if one does not exist
+# yet.
+
+sub GetSession() {
+    return $ENV{CF_SESSION} if (defined $ENV{CF_SESSION});
+
+    # Get path for new session - will need something better than naming by
+    # process id if we want to keep info around for historical info...
+    my $session = "$vardir/session/$PID";
+    my $host = GetHost();
+
+    RealMakeDir($session);
+
+    # Initialize session state.
+    RealWriteFile("$session/changes", "0");
+    # !!! this script needs to be thought out more carefully!
+    # what exactly are it's duties:
+    # *
+    RealWriteFile("$session/init.sh", <<EOF );
+CF_SESSION=$session; export CF_SESSION
+cf_svcdir=`dirname \$0`
+case \$cf_svcdir in
+/*) : ;;
+*) cf_svcdir="`pwd`/\$cf_svcdir"
+esac
+cf_host='$host'
+if [ -f \$cf_svcdir/site.ini ]
+then
+    . \$cf_svcdir/site.ini
+fi
+if [ -f \$cf_svcdir/PERHOST/\$cf_host/host.ini ]
+then
+    . \$cf_svcdir/PERHOST/\$cf_host/host.ini
+fi
+EOF
+
+    $ENV{CF_SESSION} = $session;
+    return $session;
+}
+
+#----------
+
+sub file {
+    my ($optref, @files) = get_options(\%parse_opt, @_);
+    foreach my $path (@files) {
+	if (-e $path) {
+	    CheckFile($path, %{$optref});
+	} else {
+	    TouchFile($path, %{$optref}) unless $optref->{SKIP_MISSING};
+	}
+    }
+}
+push(@EXPORT, '&file');
+
+sub fix {
+    my ($optref, @paths) = get_options(\%parse_opt, @_);
+    foreach my $path (@paths) {
+	CheckFile($path, %{$optref});
+    }
+}
+push(@EXPORT, '&fix');
+
+sub copy {
+    my ($optref, $src, $dest) = get_options(\%parse_opt, @_);
+    FileSync($src, $dest, %{$optref});
+}
+push(@EXPORT, '&copy');
+
+sub rcopy {
+    my ($optref, $src, $dest) = get_options(\%parse_opt, @_);
+    RemoteSync($src, $dest, %{$optref});
+}
+push(@EXPORT, '&rcopy');
+
+sub toc {
+    my ($optref, $dir) = get_options(\%parse_opt, @_);
+    MakeTOC($dir);
+}
+push(@EXPORT, '&toc');
+
+sub directory {
+    my ($optref, @paths) = get_options(\%parse_opt, @_);
+    foreach my $path (@paths) {
+	MakeDir($path, %{$optref});
+    }
+}
+push(@EXPORT, '&directory');
+
+# !!! I hate the name "makelink" = but link is a perl builtin
+sub makelink {
+    my ($optref, $src, $dest) = get_options(\%parse_opt, @_);
+    MakeLink($src, $dest, %{$optref});
+}
+push(@EXPORT, '&makelink');
+
+sub tidy {
+    my ($optref, @paths) = get_options(\%parse_opt, @_);
+    foreach my $path (@paths) {
+	Tidy($path, %{$optref});
+    }
+}
+push(@EXPORT, '&tidy');
+
+sub run {
+    my ($optref, @args) = get_options(\%parse_opt, @_);
+    RunAsUser($optref->{OWNER}, @args);
+}
+push(@EXPORT, '&run');
+
+sub writefile {
+    my ($optref, $path, $content) = get_options(\%parse_opt, @_);
+    WriteFile($path, $content, %{$optref});
+}
+push(@EXPORT, '&writefile');
+
+sub initshell {
+    get_options({}, @_);
+    return GetSession()."/init.sh";
+}
+push(@EXPORT, '&initshell');
+string_op('initshell');
+
+sub error {
+    my ($optref, @args) = get_options({}, @_);
+    Error(@args)
+}
+push(@EXPORT, '&error');
+
+sub markchange {
+    my ($optref, @args) = get_options({}, @_);
+    MarkChange(@args)
+}
+push(@EXPORT, '&markchange');
+
+sub gettemp {
+    my ($optref, @args) = get_options({}, @_);
+    return TempName(@args[0]);
+}
+push(@EXPORT, '&gettemp');
+string_op('gettemp');
+
+sub movetemp {
+    my ($optref, $tmp) = get_options(\%parse_opt, @_);
+    my $target = $tmp;
+    $target =~ s/-cfnew//;
+    MarkChange("updating $target");
+    return unless updating();
+    MoveTemp($tmp, $target ,%{$optref});
+}
+push(@EXPORT, '&movetemp');
+
+sub disable {
+    my ($optref, $path) = get_options(\%parse_opt, @_);
+    my $rotate = $optref->{ROTATE};
+
+    if (!defined $rotate) {
+	# Just remove the path
+	Tidy($path, %{$optref}, RECURSE=>1, RMDIR=>1);
+	return;
+    }
+
+    my $fi = GetFileInfo($path);
+    if ($fi->type ne 'NONE') {
+	$optref->{OWNER} = $fi->uid unless defined $optref->{OWNER};
+	$optref->{GROUP} = $fi->gid unless defined $optref->{GROUP};
+	$optref->{MODE} = $fi->perm unless defined $optref->{MODE};
+    }
+
+    MarkChange("rotating $path");
+    for (my $i = $rotate; $i > 0; $i--) {
+	my $backpath = "$path.$i";
+	my $prior = ($i == 1) ? $path : ("$path." . ($i-1));
+	if (-d $backpath && ! -l $backpath) {
+	    die "can't replace directory $backpath with $path\n";
+	}
+	if (-e $prior && $update) {
+	    rename($prior, $backpath)
+		    or die "can't move $prior to $backpath: $!\n";
+	}
+    }
+    WriteFile($path, "", %{$optref});
+}
+push(@EXPORT, '&disable');
+
+# Module Cleanup
+
+END { }
+
+#----------------------------------------------------------------------
+package Cf::Module;
+
+sub require() {
+    my $self = shift;
+    $self->configure() unless -f $self->get_config_flag();
+}
+
+sub get_config_flag() {
+    my $self = shift;
+    my $session = Cf::GetSession();
+    return "$session/configured/".$self->{name};
+}
+
+sub set_configured() {
+    my $self = shift;
+    Cf::RealWriteFile($self->get_config_flag(), "");
+}
+
+# Fall back to invoking call() method.
+use vars qw($AUTOLOAD);
+sub AUTOLOAD {
+    my $self = shift();
+    my $method = $AUTOLOAD;
+    $method =~ s/.*://;   # strip fully-qualified portion
+    $self->call($method, @_);
+}
+
+#----------------------------------------------------------------------
+{
+package Cf::ScriptModule;
+
+use vars qw(@ISA);
+@ISA = qw(Cf::Module);
+
+# Simple config module that invokes a script for each method.
+
+sub new {
+    my $proto = shift;
+    my $class = ref($proto) || $proto;
+    my $self = { name => shift, script => shift };
+    bless($self, $class);
+    return $self;
+}
+
+sub DESTROY {}
+
+# Invoke method by name
+sub call {
+    my $self = shift;
+    my $function = shift;
+    system($self->{script}, $function, @_) == 0
+	    or die $self->{name}.":$function failed\n";
+}
+
+sub configure() {
+    my $self = shift;
+    $self->call("configure");
+    $self->set_configured();
+}
+}
+
+#----------------------------------------------------------------------
+{
+package Cf::ModuleWrap;
+
+use vars qw(@ISA);
+@ISA = qw(Cf::Module);
+
+# Simple config module that invokes a script for each method.
+
+sub new {
+    my $proto = shift;
+    my $class = ref($proto) || $proto;
+    my $self = { name => shift, package => shift };
+    bless($self, $class);
+    return $self;
+}
+
+sub DESTROY {}
+
+# Invoke method by name
+sub call {
+    my $self = shift;
+    my $package = $self->{package};
+    my $function = shift;
+    my $result = eval sprintf('%s::%s(@_);', $package, $function);
+    die $@ if $@;
+    return $result;
+}
+
+sub configure() {
+    my $self = shift;
+    $self->call("configure");
+    $self->set_configured();
+}
+}
+
+#----------------------------------------------------------------------
+package main;
+
+import Cf;
 use File::Basename;
 
-
-my %simple_cmds = (
-    'man' => sub {
-	    require Pod::Usage;
-	    pod2usage(-exitstatus => 0, -verbose => 2)
-	},
-    'changes' => \&do_changes,
-    'require' => \&do_require,
-);
-my %commands = (
-    'init-shell' => sub { print Config::Cf::GetSession()."/init.sh\n" },
-    'copy' => \&do_copy,
-    'directory' => \&do_directory,
-    'directories' => \&do_directory,
-    'file' => \&do_file,
-    'fix' => \&do_fix,
-    'link' => \&do_link,
-    'run' => \&do_run,
-);
+# Precautionary permission mask.
+# !!! shouldn't I let user set this?
+umask(022);
 
 sub usage(;$$) {
     my ($exitcode, $message) = @_;
@@ -45,191 +2565,92 @@ sub usage(;$$) {
 #----------------------------------------
 # Parse command line.
 
-Getopt::Long::Configure("require_order");
+my %global_opts = (
+    INFORM => '',
+    I => 'INFORM',
 
-# parse main cf options (valid across all commands)
-
-my $help = 0;
-my %flags = ();		# Major Cf modal flags
-GetOptions(
-	'inform|I!' => \$flags{INFORM},
-	'dry-run|recon|test|n!' => \$flags{DRYRUN},
-	'debug|d!' => \$flags{DEBUG},
-
-	'help|?' => \$help,
-	) or usage();
-usage(0) if $help;
-my $cmd = shift(@ARGV);
-
-if ($cmd eq 'init-shell') {
-    # shell script will be trying to source the value of stdout, so make
-    # sure there is no logging noise to stdout.
-    foreach my $key ('INFORM', 'DEBUG') {
-	$flags{$key} = 0;
-	if (defined $ENV{CF_FLAGS}) {
-	    $ENV{CF_FLAGS} =~ s/:$key(=\w*)?:/:/;
-	}
-    }
-}
-my @flaglist = ();
-foreach my $key (keys(%flags)) {
-    if (defined($flags{$key})) {
-	push(@flaglist, "$key=$flags{$key}");
-    }
-}
-if (@flaglist) {
-    # !!! is all this effor to delay loading Config::Cf necessary?
-    require Config::Cf;	
-    Config::Cf::SetFlags(@flaglist);
-}
-
-# Get cf command
-
-if (defined $commands{$cmd}) {
-    # core script command - continue on
-} elsif (defined $simple_cmds{$cmd}) {
-    # simple command - do it now
-    $simple_cmds{$cmd}->();
-    exit();
-} elsif ($cmd =~ /^(\w*):(.*)/) {
-    # Invoke another configuration module
-    my $module = $1;
-    my $function = $2;
-
-    call_module($module, $function, @ARGV);
-    exit();
-} else {
-    usage(1, "$0: bad command: $cmd");
-}
-
-# Get command options.
-
-my %opts = ();		# Options for config operation
-my $checktype;		# Inverse of CHANGE_TYPE option - --checktype seems
-			# more natural than --nochangetype
-GetOptions(
-	'user|owner|u=s' => \$opts{OWNER},
-	'group|g=s' => \$opts{GROUP},
-	'mode|m=s' => \$opts{MODE},
-	'changetype|t' => \$opts{CHANGE_TYPES},
-	'recurse|r=i' => \$opts{RECURSE},
-	'skipmissing!' => \$opts{SKIP_MISSING},
-	'purge|delete|d' => \$opts{PURGE},
-
-	'checktype!' => \$checktype,
-	) or usage();
-
-$opts{CHANGE_TYPES} = !$checktype if defined $checktype;
-if ( $opts{MODE} =~ /^[1-9]/ ) {
-    # Make sure file mode numbers are interpreted in octal
-    $opts{MODE} = "0$opts{MODE}";
-}
-
-# Remove undefined options (GetOptions initiazes all keys to undef)
-foreach my $key (keys(%opts)) {
-    if (!defined($opts{$key})) { delete $opts{$key} };
-}
-
-# Load the config module now.
-require Config::Cf;	
-
-# Invoke command
-
-$commands{$cmd}->();
-exit(0);
-
-
-# Get count of config changes so far (or since prior invocation)
-
-sub do_changes() {
-    usage("changes needs 1 or arguments") if (@ARGV > 1);
-    my $initial = (@ARGV == 1) ? $ARGV[0] : 0;
-
-    die "no configuration session\n" unless (defined $ENV{CF_SESSION});
-    my $session = $ENV{CF_SESSION};
-
-    my $fh;
-    open($fh, "<$session/changes") or die "can't open changes: $!\n";
-    my $changes = <$fh>;
-    close($fh) or die $!;
-
-    print $changes-$initial, "\n";
-}
-
-sub call_module($$@) {
-    my ($module, $function, @args) = @_;
+    DRYRUN => '',
+    N => 'DRYRUN',
+    DRY_RUN => 'DRYRUN',
+    RECON => 'DRYRUN',
+    TEST => 'DRYRUN',
     
-    my $base = $ENV{CF_BASEDIR};
-    if (not defined $base) {
-	# Initialize environment for cross-script configuration
-	$base = dirname($0)."/.."; # !!! better way to compute? (and in BEGIN)
-	$ENV{CF_BASEDIR} = $base ;
-	# !!! this PATH is not ms-windows portable
-	$ENV{PATH} = "$base/bin:/usr/bin:/bin:/usr/sbin:/sbin" ;
-	$ENV{PERL5LIB} = "$base/bin";
+    DEBUG => '',
+    D => 'DEBUG',
+    
+    SPLAY => \&parse_int,
+
+    HELP => '',
+    '?' => 'HELP',
+);
+
+# Command names that can only be used on the command line (because the name
+# is illegal/reserved in perl)
+my %cmd_alias = (
+    'init-shell' => 'initshell',
+    'write' => 'writefile',
+    'link' => 'makelink',
+    'require' => 'requiremodule',
+    'directories' => 'directory',
+);
+
+sub main() {
+    my ($optref, $cmd, @args) = get_options(\%global_opts, @ARGV);
+    usage(0) if ($optref->{HELP} || !defined $cmd);
+
+    if ($optref->{SPLAY}) {
+	# Introduce random delay up to $splay minutes - generally used to keep
+	# all machines from hitting the cfmaster at the same time.
+	sleep(rand($optref->{SPLAY}*60));
+    }
+    delete $optref->{SPLAY};
+
+    # Remaining options are modal flags - pass to Cf.
+    my @flaglist = ();
+    foreach my $key (keys(%{$optref})) {
+	push(@flaglist, "$key=".$optref->{$key});
+    }
+    if (@flaglist) {
+	Cf::SetFlags(@flaglist);
     }
 
-    my $modscript = "$base/$module/configure";
-    die "unknown module: $module\n" unless -x $modscript;
-    system($modscript, $function, @args) == 0
-	    or die "$module:$function failed\n";
-}
+    # perform command
 
-sub do_require() {
-    die "no configuration session\n" unless (defined $ENV{CF_SESSION});
-    my $session = $ENV{CF_SESSION};
+    $cmd = $cmd_alias{$cmd} if defined $cmd_alias{$cmd};
+    my $rv;
+    if ($cmd eq 'man') {
+	# Generate manual page/extended help
+	# autogenerat this instead of using pod?
+	require Pod::Usage;
+	Pod::Usage::pod2usage(-exitstatus => 0, -verbose => 2)
+    } elsif ($cmd =~ /^[a-z]*$/) {
+	# Built-in command
+	$rv = eval "Cf::$cmd(\@args)";
+	die "$@\n" if $@;
+    } elsif ($cmd =~ /^(\w*):(.*)/) {
+	# Invoke another configuration module
+	my $module = $1;
+	my $function = $2;
 
-    my $flagdir = "$session/configured";
-    if (! -d $flagdir) {
-	mkdir($flagdir) or die "can't create $flagdir: $!\n";
+	$rv = Cf::CallModule($module, $function, @args);
+    } else {
+	usage(1, "$0: bad command: $cmd");
     }
 
-    foreach my $module (@ARGV) {
-	my $flag = "$flagdir/$module";
-	unless (-f $flag) {
-	    call_module($module, "configure");
-	    my $fh;
-	    open($fh, ">$flag") or die "can't open $flag: $!\n";
-	    close($fh) or die $!;
-	}
-    }
-}
-
-sub do_file() {
-    foreach my $path (@ARGV) {
-	if (-e $path) {
-	    Config::Cf::CheckFile($path, %opts);
-	} else {
-	    Config::Cf::TouchFile($path, %opts);
-	}
+    my $result_type = Cf::OpResult($cmd);
+    if (defined $result_type) {
+	exit ($rv ? 0 : 1) if $result_type eq 'boolean';
+	print $rv;
     }
 }
 
-sub do_fix() {
-    foreach my $path (@ARGV) {
-	Config::Cf::CheckFile($path, %opts);
-    }
+# Process command line - unless being run by regression test script.
+unless ($main::Testing) {
+    main();
+    exit(0);
 }
 
-sub do_copy() {
-    usage(1, "copy needs 2 arguments, not ".scalar(@ARGV)) if (@ARGV != 2);
-    Config::Cf::FileSync(@ARGV, %opts);
-}
-
-sub do_directory() {
-    foreach my $path (@ARGV) {
-	Config::Cf::MakeDir($path, %opts);
-    }
-}
-
-sub do_link() {
-    usage(1, "link needs 2 arguments") if (@ARGV != 2);
-    Config::Cf::MakeLink(@ARGV, %opts);
-}
-
-sub do_run() {
-    Config::Cf::Run(@ARGV);
-}
+1;
 
 __END__
 
@@ -242,21 +2663,26 @@ sample - Using cf
 cf [I<options>] I<cf-command> [I<comand-options>] [I<arg> ..]
 
  Options:
-    --debug
-    --inform
-    --test
-    --help
+    --debug, -d			Display debugging messages
+    --inform, -I		Display any changes made
+    --dry-run, --test, -n	Just pretend to make changes
+    --splay=minutes		Random delay at start
+    --help			Display this page
 
  Commands:
-   copy src .. dest	Copy src file(s) to dest
-   directory dir ..	Create directory(s)
-   file path ..		Create file or fix attributes
-   fix path ..		Fix file attributes
-   link src dest	Link dest to src
-   man			Display manual page
+   copy src dest		Copy src file(s) to dest
+   directory dir ..		Create directory(s)
+   file path ..			Create file or fix attributes
+   fix path ..			Fix file attributes
+   link src dest		Link dest to src
+   man				Display manual page
    module:function arg ..
    require module ..
-   run cmd arg ..	Execute external command
+   run cmd arg ..		Execute external command
+   rcopy src dest		Copy files from network volume to dest
+   setline path pat line	Make sure file contains line
+   toc dir			Generate table-of-contents for directory
+   write file content		Write specified data to file
 
  Command Options:
     --changetype
