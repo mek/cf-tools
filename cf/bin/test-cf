@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 55;
+use Test::More tests => 58;
 use English;
 use File::Temp;
 use File::stat;
@@ -247,6 +247,25 @@ ok(Cf::IsExcluded( [
     `echo foo=1 >>$tmp`;
     eval { setline($tmp, "^foo=", "foo=hi"); };
     ok($@,  "setline(), multiple lines (should throw error)");
+
+    # Cleanup
+    Cf::RealRemoveTree($tmp);
+}
+
+# writefile()
+
+{
+    my $tmp = "$tmpdir/f";
+
+    writefile($tmp, "foo");
+    is(Cf::ReadFile($tmp), "foo",  "writefile(), create file");
+    
+    writefile($tmp, "foobar");
+    is(Cf::ReadFile($tmp), "foobar",  "writefile(), update file");
+    
+    my $changes = Cf::ChangeCount();
+    writefile($tmp, "foobar");
+    is($changes, Cf::ChangeCount(), "writefile(), convergence");
 
     # Cleanup
     Cf::RealRemoveTree($tmp);

@@ -2082,7 +2082,12 @@ sub GetFake($) {
 sub WriteFile {
     my ($destpath, $content, %opts) = @_;
 
-    if ( -f $destpath ) {
+    # If contents already matches just check file attributes.
+    # Need to fudge the quick size check by 1 as read/write may add/remove a
+    # final newline.
+    my $fi = GetFileInfo($destpath);
+    if ( $fi->exist() && (abs($fi->size - length($content)) <= 1) ) {
+
 	my $oldcontent = ReadFile($destpath);
 	if ($content eq $oldcontent) {
 	    CheckFile($destpath, %opts) if (scalar(%opts));
