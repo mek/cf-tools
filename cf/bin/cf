@@ -125,6 +125,19 @@ my $update;
 # (windows) path to the cygwin root.
 
 my $rootdir = '';
+if ($is_win) {
+    if (defined $ENV{CYGROOT}) {
+	$rootdir = $ENV{CYGROOT};
+    } elsif (-f "$vardir/cygroot") {
+	$rootdir = ReadFile("$vardir/cygroot");
+    } else {
+	$rootdir = ReadCommand('cygpath -w /');
+	$rootdir =~ s/\s*$//; # Trim trailing white space
+	RealWriteFile("$vardir/cygroot", $rootdir);
+    }
+    $ENV{CYGROOT}= $rootdir;
+
+}
 
 # Maximum series of links to follow to find a real target (to avoid infinite
 # link loops).
