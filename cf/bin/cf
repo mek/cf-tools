@@ -2871,6 +2871,58 @@ sub Sync_PUT {
     return("OK");
 }
 
+sub SendCommand($$@) {
+    my ($fh, $cmd, @args) = @_;
+    my @encargs = ();
+    foreach my $arg (@args) {
+	push(@encargs, Encode($arg));
+    }
+    print($fh, join(' ', $cmd, @encargs), "\n");
+
+    my $line = <$fh>;
+    chomp($line);
+    my @args = ();
+    foreach my $arg (split(' ', $line)) {
+	push(@args, Decode($arg));
+    }
+    my $code = shift(@args);
+    if ($code eq '500') {
+	die "remote $cmd failed: $args[0]\n";
+    } elsif ($code eq '200') {
+	return $args[0];
+    } elsif ($code eq '202') {
+	my $size = $args[0];
+	my $blob;
+	my $actual = read($fh, $blob, $size);
+	die $! unless $actual;
+	die "only got $actual of $size bytes" if $actual != $size;
+	return $blob;
+    } else {
+	die "unknown result code $code for $cmd\n";
+    }
+}
+
+sub push {
+    my ($optref, $srcdir, $destdir) = get_options(\%parse_opt, @_);
+
+    # parse dest url
+    my @opts = ();
+    my ($user, $x, $server) = ($destdir =~ m{^scf://((\w)*@)?(\w\.*)/})
+	    or die "bad push target: $destdir\n";
+    push(@opts, '-l', $user) if $user;
+
+
+    # open connection to server
+    my $fh = new IO::File;
+    open($fh, "|ssh ".join(' ', @opts)." $server cf syncserver");
+
+    # Load TOC from server
+    my $toc = SendCommand($fh, 'TOC');
+    LoadTOC($destdir, $toc, 1);
+
+    DirSync($srcdir, $destdir, REMOTE_DEST=>$fh);
+}
+
 # Get short hostname of this machines.
 # Eventually allow sites to includes some domain components in this host
 # name? (so that site could have multiple domains and hosts are only unique
