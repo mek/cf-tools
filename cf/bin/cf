@@ -3179,7 +3179,7 @@ sub CloseSyncServer($) {
 
 # Sync to a remote location (upload).
 
-sub push {
+sub upload {
     my ($optref, $srcdir, $destdir) = get_options(\%parse_opt, @_);
 
     # parse dest url
@@ -3213,7 +3213,7 @@ sub push {
     close($rfh) or die $!;
     #! wait for pid
 }
-push(@EXPORT, '&push');
+push(@EXPORT, '&upload');
 
 # Get short hostname of this machines.
 # Eventually allow sites to includes some domain components in this host
