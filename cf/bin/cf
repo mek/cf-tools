@@ -2253,8 +2253,8 @@ sub GeturlCurl($;$) {
 # Generated table of contents for specified directory tree so that it can be
 # used as the source for rcopy.
 
-sub MakeTOC($$) {
-    my ($dir, $fieldsref) = @_;
+sub MakeTOC($$$) {
+    my ($dir, $fieldsref, $write_index) = @_;
     my $header = "# cftoc 1.0";
     $dir = AbsolutePath($dir);
     my @lines = ();
@@ -2277,7 +2277,7 @@ sub MakeTOC($$) {
 		$toc .= join("\n", @{$dirlines{$relpath}});
 		delete $dirlines{$relpath};
 	    }
-	    WriteFile("$path/.cftoc", $toc);
+	    WriteFile("$path/.cftoc", $toc) if $write_index;
 	}
 
 	# Try to convert user and group ids to names.
@@ -2321,7 +2321,12 @@ sub MakeTOC($$) {
 
     # Write master in reverse order to convert depth-first search to
     # breadth-first (so that directories precede their children).
-    WriteFile("$dir.toc", join("\n", $header, reverse(@lines)));
+    my $toc = join("\n", $header, reverse(@lines));
+    if ($write_index) {
+	WriteFile("$dir.toc", $toc);
+    } else {
+	return $toc;
+    }
 }
 
 # Load single directory table-of-contents into file info cache.
@@ -2931,7 +2936,7 @@ sub toc {
 	    $fields{$field} = 1;
 	}
     }
-    MakeTOC($dir, \%fields);
+    MakeTOC($dir, \%fields, 1);
 }
 push(@EXPORT, '&toc');
 
