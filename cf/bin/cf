@@ -2410,29 +2410,9 @@ sub Tidy ($%) {
 sub SetLine($$$%) {
     my ($path, $pattern, $line, %opts) = @_;
 
-    die "desired line ($line) does not match pattern ($pattern)\n"
-	    unless $line =~ $pattern;
-
-    # Make sure pattern will match an entire line - so we can use it to
-    # substitute in the new line
-    $pattern .= '.*' unless (substr($pattern, -1, 1) eq '$');
-    $pattern = ".*$pattern" unless (substr($pattern, 0, 1) eq '^');
-
-    Debug("check that $path has $line (pattern=$pattern)");
-
     my $orig = ReadFile($path);
-    my $new = $orig;
-    my $subs = ($new =~ s/$pattern/$line/mg);
-    if ($subs == 0) {
-	$new .= "\n" . $line;
-	MarkChange("adding $line to $path");
-    } elsif ($subs == 1) {
-	return if ($new eq $orig);
-	MarkChange("changing $pattern to $line in $path");
-    } else {
-	die "setline failed: $subs lines matched $pattern in $path\n";
-    }
-    WriteFile($path, $new, %opts);
+    my $new = StrSetLine($orig, $pattern, $line, $path);
+    WriteFile($path, $new, %opts) if defined $new;
 }
 
 sub setline {
@@ -2441,31 +2421,75 @@ sub setline {
 }
 push(@EXPORT, '&setline');
 
+sub StrSetLine($$$$) {
+    my ($str, $pattern, $line, $src) = @_;
+
+    die "desired line ($line) does not match pattern ($pattern)\n"
+	    unless $line =~ $pattern;
+
+    # Make sure pattern will match an entire line - so we can use it to
+    # substitute in the new line
+    $pattern .= '.*' unless (substr($pattern, -1, 1) eq '$');
+    $pattern = ".*$pattern" unless (substr($pattern, 0, 1) eq '^');
+
+    Debug("check that $src has $line (pattern=$pattern)");
+
+    my $new = $str;
+    my $subs = ($new =~ s/$pattern/$line/mg);
+    if ($subs == 0) {
+	$new .= "\n" . $line;
+	MarkChange("adding $line in $src");
+    } elsif ($subs == 1) {
+	return if ($new eq $str);
+	MarkChange("changing $pattern to $line in $src");
+    } else {
+	die "setline failed: $subs lines matched $pattern in $src\n";
+    }
+    return $new;
+}
+sub str_setline {
+    my ($optref, $str, $pattern, $line, $src) = get_options({}, @_);
+    return StrSetLine($str, $pattern, $line, $src);
+}
+push(@EXPORT, '&str_setline');
+
 # Delete lines that match a specified pattern.
 
 sub DeleteLines($$$%) {
-    my ($path, $pattern, $line, %opts) = @_;
+    my ($path, $pattern, %opts) = @_;
 
-    Debug("comment lines in $path matching ($pattern)");
+    Debug("deleting lines in $path matching ($pattern)");
 
     my $orig = ReadFile($path);
-    my @origlines = split("\n", $orig);
-    my @newlines = grep(!/$pattern/, @origlines);
-    my $new = join("\n", @newlines);
-
-    my $delcount = @origlines - @newlines;
-    if ($delcount) {
-	MarkChange(
-	    "deleting $delcount line(s) from $path that match $pattern");
-    }
-    WriteFile($path, $new, %opts);
+    my $new = StrDeleteLines($orig, $pattern, $path);
+    WriteFile($path, $new, %opts) if defined $new;
 }
 
 sub deletelines {
-    my ($optref, $path, $pattern, $line) = get_options(\%parse_opt, @_);
-    DeleteLines($path, $pattern, $line, %{$optref});
+    my ($optref, $path, $pattern) = get_options(\%parse_opt, @_);
+    DeleteLines($path, $pattern, %{$optref});
 }
 push(@EXPORT, '&deletelines');
+
+sub StrDeleteLines($$$) {
+    my ($str, $pattern, $src) = @_;
+
+    Debug("deleting lines matching ($pattern) in $src");
+
+    my @origlines = split("\n", $str);
+    my @newlines = grep(!/$pattern/, @origlines);
+
+    my $delcount = @origlines - @newlines;
+    return if ($delcount == 0);
+    MarkChange("deleting $delcount line(s) that match $pattern in $src");
+    my $new = join("\n", @newlines);
+    return $new;
+}
+sub str_deletelines {
+    my ($optref, $str, $pattern, $src) = get_options({}, @_);
+    return StrDeleteLines($str, $pattern, $src);
+}
+push(@EXPORT, '&str_deletelines');
 
 # Synchronize to catalogued network volume
 
@@ -2983,6 +3007,16 @@ sub get_config_flag() {
 sub set_configured() {
     my $self = shift;
     Cf::RealWriteFile($self->get_config_flag(), "");
+}
+
+sub write_temp($$$) {
+    my $self = shift;
+    my ($filename, $content) = @_;
+    my $name = $self->{name};
+    my $session = Cf::GetSession();
+    my $path = "$session/svc-$name/$filename";
+    Cf::RealWriteFile($path, $content);
+    return $path;
 }
 
 # Fall back to invoking call() method.
