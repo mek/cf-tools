@@ -2695,6 +2695,7 @@ sub BecomeUser($) {
 sub RunAsUser($@) {
     my ($user, @args) = @_;
     my $cmd = join(' ', @args);
+    my $timeout = 0;
 
     my $msg = "running";
     $msg += "as $user" if length($user);
@@ -2703,20 +2704,33 @@ sub RunAsUser($@) {
     return unless ($update);
 
     PreSpawn();
-    my $pid = fork();
+    my $pid = open(PIPE, "-|");
     if (! defined $pid) {
 	die "can't fork: $!";
     }
     if ($pid) {
 	# This is the parent - wait for child.
 
-	waitpid($pid, 0);
-	die "run failed ($?): $cmd\n" if $?;
+	eval {
+	    local $SIG{ALRM} = sub { die "timeout\n"; };
+	    alarm $timeout if ($timeout > 0);
+	    while (my $line = <PIPE>) {
+		chomp($line);
+		Info($line) if ($line =~ /\S/);
+	    }
+	};
+	if ($@ eq "timeout/n") {
+	    Warn("timeout: $cmd");
+	    kill($pid);
+	} elsif ($@) {
+	    die;
+	};
+	close(PIPE) or die $!;
     } else {
 	# This is the child.
 
 	BecomeUser($user) if length($user);
-	exec(@args) or die $!;
+	exec(@args) or die "cant exec: $!";
     }
 }
 
