@@ -644,6 +644,7 @@ sub LoadPerlMod($) {
 	. 'BEGIN { import Cf; }'
 	. 'my $this_svc = $module;'
 	. 'my $this_dir = $dir;'
+	. 'my $this_vars = \%vars;'
 	. $global_defs
 	. Cf::ReadFile($script);
     die "while loading $script: $@" if $@;
@@ -1915,7 +1916,7 @@ sub CopyFile {
 
     eval {
 	if ($opts{REMOTE_SRC}) {
-	    geturl($srcpath, $temp);
+	    Geturl($srcpath, $temp);
 	} else {
 	    File::Copy::copy($srcpath, $temp)
 		or die "can't copy from $srcpath: $!\n";
@@ -2129,6 +2130,15 @@ sub MakeDir {
     MoveTemp($temp, $path, %opts);
 }
 
+# Retrieve document from URL.
+
+sub geturl {
+    my ($optref, $url) = get_options({}, @_);
+    return Geturl($url);
+}
+push(@EXPORT, '&geturl');
+string_op("geturl");
+
 # Retrieve document from URL - if destination specified then write to that
 # file (always - does not follow safe rules). Otherwise return document to
 # caller. Throws an exception if the document cannot be retrieved.
@@ -2136,8 +2146,8 @@ sub MakeDir {
 my $geturl_ref;
 my $gethttp_ref;
 my $lwp_ua;
-sub geturl {
-    my ($optref, $url, $dest) = get_options({}, @_);
+sub Geturl($;$) {
+    my ($url, $dest) = @_;
 
     if (not defined $geturl_ref) {
 	eval { require HTTP::Lite; };
@@ -2162,8 +2172,22 @@ sub geturl {
 	return $geturl_ref->($url, $dest);
     }
 }
-push(@EXPORT, '&geturl');
-string_op("geturl");
+
+sub GeturlFile($;$) {
+    my ($url, $dest) = @_;
+    Debug("downloading $url (file)");
+    my ($host, $path) = ($url =~ m{^file://([^/]*)(.*)});
+    die "bad url: $url\n" unless $path;
+
+    if (defined $dest) {
+	# copy
+	File::Copy::copy($path, $dest)
+		or "failed to copy $path to $dest: $!\n";
+    } else {
+	# read
+	return RawReadFile($path);
+    }
+}
 
 sub GeturlLite($;$) {
     my ($url, $dest) = @_;
@@ -2333,7 +2357,7 @@ sub MakeTOC($$$) {
 
 sub LoadDirTOC($) {
     my ($url) = @_;
-    my $toc = geturl("$url/.cftoc");
+    my $toc = Geturl("$url/.cftoc");
 
     my $fi = GetFileInfo($url);
     $fi->dir([]) if ($fi);
@@ -2345,7 +2369,7 @@ sub LoadDirTOC($) {
 sub LoadTreeTOC($) {
     my ($url) = @_;
 
-    my $toc = geturl("$url.toc");
+    my $toc = Geturl("$url.toc");
     LoadTOC($url, $toc, 1);
 }
 
@@ -2763,6 +2787,67 @@ sub read_command {
     ReadCommand(join(' ', @_));
 }
 push(@EXPORT, '&read_command');
+
+# Server-side for sync command
+
+my %server_fields = ();
+my $server_root = "$ENV{HOME}/cfsync";
+
+sub syncserver {
+    while (my $line = <STDIN>) {
+	chomp($line);
+	my @args = ();
+	foreach my $arg (split(' ', $line)) {
+	    push(@args, Decode($arg));
+	}
+	my $op = shift(@args);
+
+	if ($op eq 'EXIT') {
+	    print "200 bye\n";
+	    last;
+	}
+
+	my ($result, $blob) = eval "Sync_$op(\@args);";
+	if ($@) {
+	    print "500 ".Encode($@)."\n";
+	} elsif (defined $blob) {
+	    my $len = length($blob);
+	    print "201 ".Encode($result)." $len\n";
+	    print $blob;
+	}  else {
+	    print "200 ".Encode($result)."\n";
+	}
+    }
+}
+push(@EXPORT, '&syncserver');
+
+sub Sync_TOC {
+    my $toc = MakeTOC($server_root, \%server_fields, 0);
+    return("OK", $toc);
+}
+
+sub SyncCheckPath($) {
+    my ($relpath) = @_;
+    if ($relpath !~ m{^[-\w\/\.]*$}	# Allow only alphanum and _-./
+	|| "/$relpath/" =~ m{/\.\./}	# No parent directory relative
+	) {
+	die "illegal path: $relpath\n";
+    }
+}
+
+sub Sync_GET {
+    my ($relpath) = @_;
+    SyncCheckPath($relpath);
+    my $path = "$server_root/$relpath";
+
+    die "not plain file: $path\n" unless -f $path;
+    open(FILE, "<$path") or die "can't open $path: $!\n";
+    binmode(FILE);
+    my $contents = join('', <FILE>) ;
+    close FILE;
+
+    return("OK", $contents);
+}
 
 # Get short hostname of this machines.
 # Eventually allow sites to includes some domain components in this host
