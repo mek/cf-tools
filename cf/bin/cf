@@ -238,6 +238,7 @@ my %parse_opt = (
     FIELD => 'TOC_FIELD',
 
     TIMEOUT => \&parse_int,
+    CHDIR => \&parse_string,
 );
 
 # Usage: get_options parser-hashref arg ..
@@ -2694,6 +2695,7 @@ sub BecomeUser($) {
 sub run {
     my ($optref, @args) = get_options(\%parse_opt, @_);
     my $user = $optref->{OWNER};
+    my $dir = $optref->{CHDIR};
     my $timeout = $optref->{TIMEOUT} || 0;
     my $cmd = join(' ', @args);
 
@@ -2730,6 +2732,9 @@ sub run {
 	# This is the child.
 
 	BecomeUser($user) if length($user);
+	if (length($dir)) {
+	    chdir($dir) or die "can't chdir to $dir: $!\n";
+	}
 	exec(@args) or die "cant exec: $!";
     }
 }
