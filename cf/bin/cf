@@ -170,5 +170,7 @@ cf I<cf-command> [I<options>] [I<arg> ..]
     --user user
     --mode permission
     --group group
+    --changetype
+    --recurse
 
 =cut
