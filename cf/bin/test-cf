@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 63;
+use Test::More tests => 66;
 use English;
 use File::Temp;
 use File::stat;
@@ -385,3 +385,25 @@ ok(Cf::IsExcluded( [
 
     Cf::RealRemoveTree($dir);
 }
+
+# touch()
+
+{
+    my $tmp = "$tmpdir/a";
+
+    touch($tmp);
+    ok(-e $tmp, "touch(), new file");
+
+    my $mtime = stat($tmp)->mtime;
+    sleep(2);
+    touch($tmp);
+    ok($mtime < stat($tmp)->mtime, "touch(), existing file");
+ 
+    my $mtime = stat($tmp)->mtime;
+    sleep(2);
+    touch('-skipmissing', $tmp);
+    ok($mtime < stat($tmp)->mtime, "touch(), -skipmissing");
+  
+    unlink($tmp);
+}
+

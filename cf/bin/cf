@@ -3352,7 +3352,8 @@ push(@EXPORT, '&file');
 sub touch {
     my ($optref, @files) = get_options(\%parse_opt, @_);
     foreach my $path (@files) {
-	TouchFile($path, %{$optref}) unless $optref->{SKIP_MISSING};
+	TouchFile($path, %{$optref})
+	    unless ($optref->{SKIP_MISSING} && !(-e $path));
     }
 }
 push(@EXPORT, '&touch');
