@@ -1645,7 +1645,11 @@ sub GetCksum($) {
 sub SetCksum($$$) {
     my ($path, $sum, $mtime) = @_;
     TieFile(%cksums, "$vardir/cksum") unless tied %cksums;
-    $cksums{$path} = "$sum $mtime";
+    if (defined $sum) {
+	$cksums{$path} = "$sum $mtime";
+    } else {
+	delete $cksums{$path};
+    }
     # or use unpack() / pack ?
 }
 
@@ -2024,11 +2028,13 @@ sub CopyFile {
     # a real quick check.
 
     my $same = ( $di && $si->size == $di->size );
+    my $cksum;
     if ($same) {
 	if ( $compare eq 'MD5' ) {
 	    $same = (MD5($srcpath) eq MD5($destpath));
 	} elsif ( $compare eq 'CKSUM' ) {
-	    $same = (Cksum($srcpath) eq Cksum($destpath));
+	    $cksum = Cksum($srcpath);
+	    $same = ($cksum eq Cksum($destpath));
 	} elsif ( $compare eq 'MTIME' ) {
 	    if ($newtime) {
 		$same = ($si->mtime < $di->mtime);
@@ -2108,7 +2114,7 @@ sub CopyFile {
     MoveTemp($temp, $destpath, %opts);
 
     # Update checksum database
-    SetCksum($destpath, $si->cksum, $ti->mtime) if defined $si->cksum;
+    SetCksum($destpath, $cksum, $ti->mtime);
 }
 
 # Set modification time of file to now (create file if necessary).

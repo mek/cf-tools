@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 66;
+use Test::More tests => 67;
 use English;
 use File::Temp;
 use File::stat;
@@ -121,6 +121,7 @@ Cf::RealRemoveTree("$tmpdir/sub");
 {
     my $src = "$tmpdir/a";
     my $dest = "$tmpdir/b";
+    my $src2 = "$tmpdir/c";
 
     `echo hi >$src`;
     copy(-mode => 755, $src, $dest);
@@ -128,15 +129,23 @@ Cf::RealRemoveTree("$tmpdir/sub");
 
     unlink($src, $dest);
     `echo hi >$src`;
+    `echo ho >$src2`;
     `echo hi >$dest`;
+
     my $changes = Cf::ChangeCount();
     copy(-copytype => 'cksum', $src, $dest);
     is($changes, Cf::ChangeCount(), "copy(), cksum convergence");
+
+    copy(-copytype => 'cksum', $src2, $dest);
+    $changes = Cf::ChangeCount();
+    copy(-copytype => 'cksum', $src2, $dest);
+    is($changes, Cf::ChangeCount(), "copy(), cksum convergence2");
+
     `echo bye >$dest`;
     copy(-copytype => 'cksum', $src, $dest);
     is(`diff $src $dest`, "", "copy(), cksum");
 
-    unlink($src, $dest);
+    unlink($src, $src2, $dest);
 }
 
 # rcopy()
