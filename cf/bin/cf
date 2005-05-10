@@ -2024,16 +2024,19 @@ sub CopyFile {
 	$opts{MODE} = ($si->perm & ~umask());
     }
 
+    # Grab source checksum is already computed
+    my $cksum = $si->cksum;
+
     # Check if source and destination differ - first compare file sizes for
     # a real quick check.
 
     my $same = ( $di && $si->size == $di->size );
-    my $cksum;
     if ($same) {
 	if ( $compare eq 'MD5' ) {
 	    $same = (MD5($srcpath) eq MD5($destpath));
 	} elsif ( $compare eq 'CKSUM' ) {
-	    $cksum = Cksum($srcpath);
+	    # Make sure we have the source checksum
+	    $cksum = Cksum($srcpath) unless defined $cksum;
 	    $same = ($cksum eq Cksum($destpath));
 	} elsif ( $compare eq 'MTIME' ) {
 	    if ($newtime) {
