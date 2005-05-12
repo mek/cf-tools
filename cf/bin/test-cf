@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 67;
+use Test::More tests => 68;
 use English;
 use File::Temp;
 use File::stat;
@@ -296,6 +296,12 @@ ok(Cf::IsExcluded( [
     `echo bar=2 >>$tmp`;
     deletelines($tmp, "^foo=");
     is(Cf::ReadFile($tmp), "bar=2",  "deletelines()");
+    
+    `echo foo=1 >$tmp`;
+    `echo bar=2 >>$tmp`;
+    deletelines(-mode=>"0640", $tmp, "^foo=");
+    is(sprintf("%04o", stat($tmp)->mode & 07777), "0640",
+	    "deletelines(), -mode option");
     
     `echo foo=1 >$tmp`;
     my $changes = Cf::ChangeCount();

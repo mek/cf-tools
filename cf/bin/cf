@@ -2733,7 +2733,7 @@ push(@EXPORT, '&str_setline');
 
 # Delete lines that match a specified pattern.
 
-sub DeleteLines($$$%) {
+sub DeleteLines($$%) {
     my ($path, $pattern, %opts) = @_;
 
     Debug("deleting lines in $path matching ($pattern)");
