@@ -676,6 +676,7 @@ sub LoadPerlMod($) {
     my %vars = (LoadVars("$dir/site.ini"),
 	    LoadVars("$dir/PERHOST/$host/host.ini"));
     foreach my $key (keys(%vars)) {
+	die "bad variable name in module $name: $key\n" unless $key =~ /^\w+$/;
 	if ($key =~ /^svc_/) {
 	    eval { Cf::GetModule($vars{$key}) };
 	    if ($@) {
