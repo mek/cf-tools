@@ -2457,8 +2457,8 @@ sub GeturlCurl($;$) {
 # Generated table of contents for specified directory tree so that it can be
 # used as the source for rcopy.
 
-sub MakeTOC($$$) {
-    my ($dir, $fieldsref, $write_index) = @_;
+sub MakeTOC($$$%) {
+    my ($dir, $fieldsref, $write_index, %opts) = @_;
     my $header = "# cftoc 1.0";
     $dir = AbsolutePath($dir);
     my @lines = ();
@@ -2481,7 +2481,7 @@ sub MakeTOC($$$) {
 		$toc .= join("\n", @{$dirlines{$relpath}});
 		delete $dirlines{$relpath};
 	    }
-	    WriteFile("$path/.cftoc", $toc) if $write_index;
+	    WriteFile("$path/.cftoc", $toc, %opts) if $write_index;
 	}
 
 	# Try to convert user and group ids to names.
@@ -2529,7 +2529,7 @@ sub MakeTOC($$$) {
     # breadth-first (so that directories precede their children).
     my $toc = join("\n", $header, reverse(@lines));
     if ($write_index) {
-	WriteFile("$dir.toc", $toc);
+	WriteFile("$dir.toc", $toc, %opts);
     } else {
 	return $toc;
     }
@@ -3399,7 +3399,20 @@ sub toc {
 	    $fields{$field} = 1;
 	}
     }
-    MakeTOC($dir, \%fields, 1);
+
+    # Generate one log entry - not one for each index file we create.
+    Info("indexing $dir");
+    my $inform = $flags{INFORM};
+    $flags{INFORM} = 0;
+
+    # Generate the indexes - default to no backups.
+    eval { MakeTOC($dir, \%fields, 1, BACKUP=>"NONE", %{$optref}); };
+    my $err = $@;
+
+    # Restore informational messages.
+    $flags{INFORM} = $inform;
+
+    die $err if $err;
 }
 push(@EXPORT, '&toc');
 
