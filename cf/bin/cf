@@ -636,6 +636,11 @@ sub CallModule($$@) {
     my $module = GetModule($modname);
     return $module->call($function, @args);
 }
+sub call_module {
+    my ($o, $name, $function, @args) = get_options({}, @_);
+    return CallModule($name, $function, @args);
+}
+push(@EXPORT, '&call_module');
 
 # If specified file exists read simple config settings from the file (var=val)
 # a return list of alternative setting names and values.
@@ -2346,7 +2351,9 @@ sub Geturl($;$) {
 	    $lwp_ua = LWP::UserAgent->new;
 	}
     }
-    if ($gethttp_ref && $url =~ /^http:/) {
+    if ($url =~ /^file:/) {
+	return GeturlFile($url, $dest);
+    } elsif ($gethttp_ref && $url =~ /^http:/) {
 	return $gethttp_ref->($url, $dest);
     } else {
 	return $geturl_ref->($url, $dest);
