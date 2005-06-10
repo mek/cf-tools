@@ -3688,9 +3688,9 @@ sub call {
     my $self = shift;
     my $package = $self->{package};
     my $function = shift;
-    my $result = eval sprintf('%s::%s(@_);', $package, $function);
+    my @results = eval sprintf('%s::%s(@_);', $package, $function);
     die $@ if $@;
-    return $result;
+    return @results;
 }
 
 sub configure() {
