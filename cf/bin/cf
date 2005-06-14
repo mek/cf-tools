@@ -3465,6 +3465,12 @@ sub error {
 }
 push(@EXPORT, '&error');
 
+sub warning {
+    my ($optref, @args) = get_options({}, @_);
+    Warn(@args)
+}
+push(@EXPORT, '&warning');
+
 sub debug {
     my ($optref, @args) = get_options({}, @_);
     Debug(@args)
