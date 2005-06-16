@@ -3677,7 +3677,7 @@ package Cf::ModuleWrap;
 use vars qw(@ISA);
 @ISA = qw(Cf::Module);
 
-# Simple config module that invokes a script for each method.
+# Config module that invokes package subroutines for each method.
 
 sub new {
     my $proto = shift;
@@ -3696,7 +3696,10 @@ sub call {
     my $function = shift;
     my @results = eval sprintf('%s::%s(@_);', $package, $function);
     die $@ if $@;
-    return @results;
+
+    # Try to preserve scalar/list context of result (yech - i really hate
+    # this aspect of perl)
+    return (scalar(@results) == 1) ? $results[0] : @results;
 }
 
 sub configure() {
