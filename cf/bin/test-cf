@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 68;
+use Test::More tests => 69;
 use English;
 use File::Temp;
 use File::stat;
@@ -56,6 +56,16 @@ ok($ENV{CF_FLAGS} !~ /INFORM/, "clearing INFORM flag");
     run("touch", "$tmpfile");
     ok(! -f $tmpfile, "run(), dryrun");
     Cf::SetFlags('DRYRUN=0');
+
+    unlink($tmpfile);
+    eval {
+#	run(-timeout=>1, '-sloppy-daemon',
+#	    "sh", "-c", "sleep 4 && touch $tmpfile");
+	run(-timeout=>1, '-sloppy-daemon', "perl", "-e",
+	    "sleep(4); open(FILE, '>$tmpfile') or die; close(FILE)");
+    };
+    sleep(4);
+    ok(! -f $tmpfile, "run(), timeout");
 
     SKIP: {
 	skip "not root", 1 unless $UID == 0;
