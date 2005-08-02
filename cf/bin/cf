@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# Copyright 2003 Martin Andrews
+# Copyright 2003-2005 Martin Andrews
 #
 #   This program is free software; you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License as published by
@@ -34,6 +34,12 @@
 #
 # Strict checking on options - i've been burned by passing options that are
 # silently ignored.
+#
+# Make Lock() follow cfengine's adaptive lock behavior:
+# http://www.skipitaris.com/pub/lisa/main.html
+#
+# Re-eval flock use - didnt realize it was blocking. Right now I hold a lock
+# on the checksum table - that is probably a problem.
 
 
 use strict;
@@ -1285,6 +1291,9 @@ sub Lock($) {
 	    if ( kill(0, $lockpid) ) {
 		if ($locktime - $now > $duration) {
 		    Warn("breaking old lock $name from $lockpid");
+		    VerifiedKill($lockpid)
+			or die "can't kill proc $lockpid to break lock $name\n";
+
 		} else {
 		    die "lock $name held by process $lockpid\n";
 		}
@@ -1296,6 +1305,24 @@ sub Lock($) {
 
     # Throw error if lock failed
     die $@ if $@;
+}
+
+# Kill specified process (assuming it exists) and verify that process no
+# longer exists. Tries escalating series of signals. Returns 1 if process is
+# gone, 0 if process would not die.
+
+sub VerifiedKill($) {
+    my ($pid) = @_;
+
+    kill('INT', $pid) or return 1;
+    sleep(2);
+    kill('TERM', $pid) or return 1;
+    sleep(2);
+    kill('KILL', $pid) or return 1;
+    sleep(1);
+    kill(0, $pid) or return 1;
+
+    return 0;
 }
 
 sub Unlock($) {
@@ -2953,19 +2980,26 @@ sub run {
 	eval {
 	    local $SIG{ALRM} = sub { die "timeout\n"; };
 	    alarm $timeout if ($timeout > 0);
+
 	    while (my $line = <PIPE>) {
 		chomp($line);
 		Info($line) if ($line =~ /\S/);
 	    }
+	    close(PIPE) or die $!;
+
 	    alarm 0;
 	};
 	if ($@ eq "timeout\n") {
 	    Info("timeout: $cmd");
 	    kill('INT', $pid);
+	    close(PIPE);
+	    VerifiedKill($pid) or Warn("can't kill timed out command: $cmd");
+	    die "command timed out ($cmd)\n";
 	} elsif ($@) {
-	    die;
+	    close(PIPE);
+	    die "command failed ($cmd): $@\n";
 	};
-	close(PIPE) or die $!;
+
     } else {
 	# This is the child.
 
@@ -3602,8 +3636,26 @@ package Cf::Module;
 
 sub require() {
     my $self = shift;
-    $self->configure() unless -f $self->get_config_flag();
+    unless (-f $self->get_config_flag()) {
+	$self->lockop("require");
+	$self->configure();
+	$self->unlockop("require");
+    }
 }
+
+sub lockop($) {
+    my $self = shift;
+    my ($op) = @_;
+    my $name = $self->{name};
+    Lock("$name:$op");
+} 
+
+sub unlockop($) {
+    my $self = shift;
+    my ($op) = @_;
+    my $name = $self->{name};
+    Unlock("$name:$op");
+} 
 
 sub get_config_flag() {
     my $self = shift;
