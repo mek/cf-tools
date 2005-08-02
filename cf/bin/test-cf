@@ -59,10 +59,11 @@ ok($ENV{CF_FLAGS} !~ /INFORM/, "clearing INFORM flag");
 
     unlink($tmpfile);
     eval {
+	# touch $tmpfile after delay - should timeout before touch.
+	run(-timeout=>1, "perl", "-e",
+	    "sleep(4); open(FILE, '>$tmpfile') or die; close(FILE)");
 #	run(-timeout=>1, '-sloppy-daemon',
 #	    "sh", "-c", "sleep 4 && touch $tmpfile");
-	run(-timeout=>1, '-sloppy-daemon', "perl", "-e",
-	    "sleep(4); open(FILE, '>$tmpfile') or die; close(FILE)");
     };
     sleep(4);
     ok(! -f $tmpfile, "run(), timeout");
