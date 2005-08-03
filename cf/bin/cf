@@ -3299,6 +3299,68 @@ sub get_uname() {
 push(@EXPORT, '&get_uname');
 string_op('get_uname');
 
+# Get operating system - !!! somewhat reluctantly added - isnt their some
+# standard I can be using here instead of my owm classification? (other than
+# uname which does not give enough (or consistent enough) info for linux or
+# windows)
+
+my %os = split(':', $ENV{CF_OS});
+
+sub getos {
+    my ($optref, $key) = get_options(\%parse_opt, @_);
+    $key = "os" unless defined $key;
+
+    if (!%os) {
+	my $osname;
+	my $version;
+	if ($is_win) {
+	    require Win32;
+	    $osname = (Win32::IsWinNT()) ? 'winnt' : 'win32';
+	    my ($junk, $major, $minor, $build, $id) = Win32::GetOSVersion();
+	    $version = "${major}.${minor}";
+	} else {
+	    my $uname_sys = get_uname();
+	    my %uname_lookup = (
+		'SunOS' => 'sunos',
+		'IRIX64' => 'irix',
+	    );
+
+	    if ( defined $uname_lookup{$uname_sys} ) {
+		$osname = $uname_lookup{$uname_sys};
+		$version = ReadCommand("uname -r");
+		chomp($version);
+	    } elsif ( $uname_sys eq 'Linux' ) {
+		my $rhat_file = '/etc/redhat-release';
+		if ( -f $rhat_file ) {
+		    open(FILE, "<$rhat_file");
+		    my $line = <FILE>;
+		    if ($line =~ /Red Hat .* release (\d[\d.]+)/) {
+			$osname = 'redhat';
+			$version = $1;
+		    } elsif ($line =~ /Fedora Core .* release (\d[\d.]*)/) {
+			$osname = 'fedora';
+			$version = $1;
+		    }
+		}
+	    } elsif ( $uname_sys eq 'AIX' ) {
+		$osname = 'aix';
+		$version = ReadCommand("uname -v");
+		chomp($version);
+	    }
+	}
+	$os{name} = $osname;
+	$os{version} = $version;
+	$os{os} = "$osname-$version";
+
+	$ENV{CF_OS} = join(':', %os);
+    }
+
+    die "getos: unknown key: $key" unless defined $os{$key};
+    return $os{$key};
+}
+push(@EXPORT, '&getos');
+string_op('getos');
+
 # Determine base of configuration script/module tree
 
 sub GetBase() {
