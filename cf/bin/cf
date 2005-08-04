@@ -3283,7 +3283,7 @@ sub get_host() {
 push(@EXPORT, '&get_host');
 string_op('get_host');
 
-# Get uname (unix-type)
+# Get uname (unix-type) - !!! depracated - should shift to getos
 
 my $uname = $ENV{CF_UNAME};
 sub get_uname() {
@@ -3311,43 +3311,43 @@ sub getos {
     $key = "os" unless defined $key;
 
     if (!%os) {
-	my $osname;
-	my $version;
+	my $class = $^O;
+	my $osname = 'unknown';
+	my $version = 'unknown';
 	if ($is_win) {
 	    require Win32;
 	    $osname = (Win32::IsWinNT()) ? 'winnt' : 'win32';
 	    my ($junk, $major, $minor, $build, $id) = Win32::GetOSVersion();
 	    $version = "${major}.${minor}";
 	} else {
-	    my $uname_sys = get_uname();
-	    my %uname_lookup = (
-		'SunOS' => 'sunos',
-		'IRIX64' => 'irix',
-	    );
-
-	    if ( defined $uname_lookup{$uname_sys} ) {
-		$osname = $uname_lookup{$uname_sys};
-		$version = ReadCommand("uname -r");
-		chomp($version);
-	    } elsif ( $uname_sys eq 'Linux' ) {
+	    if ( $class eq 'linux' ) {
 		my $rhat_file = '/etc/redhat-release';
+		my $deb_file = '/etc/debian_version';
+
 		if ( -f $rhat_file ) {
-		    open(FILE, "<$rhat_file");
-		    my $line = <FILE>;
+		    my $line = ReadFile($rhat_file);
+		    $osname = 'redhat';
 		    if ($line =~ /Red Hat .* release (\d[\d.]+)/) {
-			$osname = 'redhat';
 			$version = $1;
 		    } elsif ($line =~ /Fedora Core .* release (\d[\d.]*)/) {
 			$osname = 'fedora';
 			$version = $1;
 		    }
+		} elsif ( -f $deb_file ) {
+		    $osname = 'debian';
+		    $version = ReadFile($deb_file);
 		}
-	    } elsif ( $uname_sys eq 'AIX' ) {
+	    } elsif ( $class eq 'aix' ) {
 		$osname = 'aix';
 		$version = ReadCommand("uname -v");
 		chomp($version);
+	    } else {
+		$osname = $class;
+		$version = ReadCommand("uname -r");
+		chomp($version);
 	    }
 	}
+	$os{class} = $class;
 	$os{name} = $osname;
 	$os{version} = $version;
 	$os{os} = "$osname-$version";
