@@ -818,12 +818,11 @@ sub all {
 #----------------------------------------------------------------------
 # Windows Registry utility routines.
 
-# Usage: Registry($keypath)
 # Get reference to named (relative to root) key in registry. Returns key
 # reference.
 
-sub Registry($) {
-    my $path = shift();
+sub get_registry($) {
+    my ($optref, $path) = get_options({}, @_);
 
     if (!defined $Cf::Registry) {
 	# Load registry.
@@ -837,18 +836,17 @@ sub Registry($) {
     # dynamically imported - is there some way to avoid coding in the
     # package name here?
     my $key = $Cf::Registry->{$path} 
-	or die "can't open registry key, $path: $^E";
+	or die "can't open registry key, $path: $^E\n";
 
     return $key;
 }
+push(@EXPORT, '&get_registry');
 
 # Usage: SetRegistry($key, $name, $value, $type)
 # Make sure registry item has specified value/type. Create ancestral subkeys
 # as required.
-# Returns 1 if registry is modified, 0 otherwise (either the registry
-# already contains the correct value or not in update mode).
 
-sub SetRegistry($$$$) {
+sub set_registry($$$$) {
     my ($key, $name, $value, $type) = @_;
     my $keypath = $key->Path();
     my $message = "setting $keypath$name to ";
@@ -864,20 +862,22 @@ sub SetRegistry($$$$) {
     # append to message saying what the new and old values are.
 
     if ($type eq 'REG_MULTI_SZ') {
+	debug("checking that $keypath$name is @{$value}");
 	my $oldref = $key->{$name};
 	if (defined($oldref)) {
-	    return 0 if (join("\0", @{$value}) eq join("\0", @{$oldref}));
+	    return if (join("\0", @{$value}) eq join("\0", @{$oldref}));
 	} else {
 	    $oldref = [];
 	}
 	$message .= "@{$value} ($type) (old was @{$oldref})";
     } else {
+	debug("checking that $keypath$name is $value");
 	my $old = $key->{$name};
 	if (defined($old)) {
 	    if ($type eq 'REG_DWORD') {
-		return 0 if ( hex($old) == hex($value) );
+		return if ( hex($old) == hex($value) );
 	    } else {
-		return 0 if ( $old eq $value );
+		return if ( $old eq $value );
 	    }
 	} else {
 	    $old = '';
@@ -901,51 +901,48 @@ sub SetRegistry($$$$) {
     }
     MarkChange($message);
 
-    return 0 unless ( $update );
+    return unless ( $update );
 
     foreach my $subkey (@subkeys) {
 	my $nextkey = $key->{"$subkey$delim"};
 	if (!defined($nextkey)) {
 	    $nextkey = $key->CreateKey($subkey)
-		    or die "failed to create registry key, $subkey: $^E";
+		    or die "failed to create registry key, $subkey: $^E\n";
 	}
 	$key = $nextkey;
     }
     $key->SetValue($item, $value, $type)
-	    or die "failed to set registry, $item/$value: $^E";
-    return 1;
+	    or die "failed to set registry, $item/$value: $^E\n";
 }
+push(@EXPORT, '&set_registry');
 
-# Usage: DeleteRegistry($key, $name)
-# Delete specified item from registry.  Returns 1 if registry is
-# modified, 0 otherwise (either the registry value did not exist,
-# or not in update mode).
+# Delete specified item from registry.
 
-sub DeleteRegistry($$) {
+sub delete_registry($$) {
     my ($key, $name) = @_;
 
-    return 0 if !defined($key->{$name});
+    return if !defined($key->{$name});
 
     MarkChange("deleting ", $key->Path(), $name);
+    return unless ( $update );
 
-    return 0 unless ( $update );
     delete $key->{$name};
-    return 1;
 }
+push(@EXPORT, '&delete_registry');
 
-# Usage: FlushRegistry($key)
 # Flush all registry updates, and perform a 'RegFlushKey' on the specified
 # registry key.
 
-sub FlushRegistry($) {
+sub flush_registry($) {
     my ($key) = @_;
 
     Debug("flushing ", $key->Path());
-    if ( $update ) {
-	$Cf::Registry->Flush();
-	$key->RegFlushKey();
-    }
+    return unless ( $update );
+
+    $Cf::Registry->Flush();
+    $key->RegFlushKey();
 }
+push(@EXPORT, '&flush_registry');
 
 
 #----------------------------------------------------------------------
@@ -3327,7 +3324,10 @@ sub getos {
 		if ( -f $rhat_file ) {
 		    my $line = ReadFile($rhat_file);
 		    $osname = 'redhat';
-		    if ($line =~ /Red Hat .* release (\d[\d.]+)/) {
+		    if ($line =~ /Red Hat ((Linux Advanced Server)|(Enterprise Linux.*)) release (\d[\d.]*)/) {
+			$osname = 'rhel';
+			$version = $4;
+		    } elsif ($line =~ /Red Hat .* release (\d[\d.]*)/) {
 			$version = $1;
 		    } elsif ($line =~ /Fedora Core .* release (\d[\d.]*)/) {
 			$osname = 'fedora';
@@ -3705,18 +3705,18 @@ sub require() {
     }
 }
 
-sub lockop($) {
+sub lockop($$) {
     my $self = shift;
     my ($op) = @_;
     my $name = $self->{name};
-    Lock("$name:$op");
+    Cf::Lock("$name:$op");
 } 
 
-sub unlockop($) {
+sub unlockop($$) {
     my $self = shift;
     my ($op) = @_;
     my $name = $self->{name};
-    Unlock("$name:$op");
+    Cf::Unlock("$name:$op");
 } 
 
 sub get_config_flag() {
