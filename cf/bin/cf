@@ -153,6 +153,10 @@ if ($is_win) {
 my $max_links = 10;
 
 #--------
+
+sub GetVarDir() { return $vardir };
+
+#--------
 # Parsing of configuration options.
 
 sub parse_string { return $_[0] }
@@ -738,7 +742,7 @@ sub all {
     my $svfile = GetBase() . "/cf/PERHOST/$host/services";
     die "no configuration defined for this host: $host\n" unless (-f $svfile);
 
-    Lock("all");
+    my $lock = new Cf::Lock("all");
 
     open(FILE, "<$svfile") or die $!;
     my @svcs = <FILE>;
@@ -747,8 +751,6 @@ sub all {
 	$svc =~ s/[\cM\cJ]*$//;		# chomp() for any text format
 	GetModule($svc)->require();
     }
-
-    Unlock("all");
 }
 
 
@@ -841,6 +843,16 @@ sub get_registry($) {
     return $key;
 }
 push(@EXPORT, '&get_registry');
+
+sub setregistry {
+    my ($optref, $path, $val) = get_options( {TYPE => \&parse_string,}, @_);
+    my $type = $optref->{TYPE} || "SZ";
+    my $keypath = dirname($path);
+    my $name = basename($path);
+    my $key = get_registry($keypath);
+    set_registry($key, $name, $val, "REG_$type");
+}
+push(@EXPORT, '&setregistry');
 
 # Usage: SetRegistry($key, $name, $value, $type)
 # Make sure registry item has specified value/type. Create ancestral subkeys
@@ -1270,40 +1282,6 @@ sub UntieFile(\%) {
     delete $tieinfo{$mapref};
 }
 
-
-# Create an lock of specified name. Will be held until unlock,
-# the process exits, or time limit runs out.
-
-sub Lock($) {
-    my ($name) = @_;
-    my $now = time();
-    my $duration = 60*60;	# default to holding locks for an hour.
-
-    RealMakeDir($vardir);
-    my %lockmap;
-    TieFile(%lockmap, "$vardir/locks");
-    eval {
-	if (defined $lockmap{$name}) {
-	    my ($lockpid, $locktime) = split(' ', $lockmap{$name});
-	    if ( kill(0, $lockpid) ) {
-		if ($locktime - $now > $duration) {
-		    Warn("breaking old lock $name from $lockpid");
-		    VerifiedKill($lockpid)
-			or die "can't kill proc $lockpid to break lock $name\n";
-
-		} else {
-		    die "lock $name held by process $lockpid\n";
-		}
-	    }
-	}
-	$lockmap{$name} = "$PID $now";
-    };
-    UntieFile(%lockmap);
-
-    # Throw error if lock failed
-    die $@ if $@;
-}
-
 # Kill specified process (assuming it exists) and verify that process no
 # longer exists. Tries escalating series of signals. Returns 1 if process is
 # gone, 0 if process would not die.
@@ -1320,26 +1298,6 @@ sub VerifiedKill($) {
     kill(0, $pid) or return 1;
 
     return 0;
-}
-
-sub Unlock($) {
-    my ($name) = @_;
-
-    my %lockmap;
-    TieFile(%lockmap, "$vardir/locks");
-    eval {
-	if (defined $lockmap{$name}) {
-	    my ($lockpid, $locktime) = split(' ', $lockmap{$name});
-	    if ($PID != $lockpid) {
-		die "can't unlock $name - held by process $lockpid\n";
-	    }
-	    delete $lockmap{$name};
-	}
-    };
-    UntieFile(%lockmap);
-
-    # Throw error if unlock failed
-    die $@ if $@;
 }
 
 # Backup specified file according provided options. Will use a hard link for
@@ -3666,6 +3624,73 @@ SetFlags(split(':', $ENV{CF_FLAGS}));
 END { }
 
 #----------------------------------------------------------------------
+package Cf::Lock;
+use English;
+
+# Create an lock of specified name. Will be held until object is destroyed,
+# the process exits, or time limit runs out.
+
+sub new {
+    my $proto = shift;
+    my $name = shift;
+    my $class = ref($proto) || $proto;
+    my $self = { name => $name };
+    bless($self, $class);
+
+    my $now = time();
+    my $duration = 60*60;	# default to holding locks for an hour.
+    my $vardir = Cf::GetVarDir();
+
+    Cf::RealMakeDir($vardir);
+    my %lockmap;
+    Cf::TieFile(%lockmap, "$vardir/locks");
+    eval {
+	if (defined $lockmap{$name}) {
+	    my ($lockpid, $locktime) = split(' ', $lockmap{$name});
+	    if ( kill(0, $lockpid) ) {
+		if ($locktime - $now > $duration) {
+		    Cf::Warn("breaking old lock $name from $lockpid");
+		    Cf::VerifiedKill($lockpid)
+			or die "can't kill proc $lockpid to break lock $name\n";
+
+		} else {
+		    die "lock $name held by process $lockpid\n";
+		}
+	    }
+	}
+	$lockmap{$name} = "$PID $now";
+    };
+    Cf::UntieFile(%lockmap);
+
+    # Throw error if lock failed
+    die $@ if $@;
+
+    return $self;
+}
+
+sub DESTROY($) {
+    my $self = shift;
+    my $name = $self->{name};
+    my $vardir = Cf::GetVarDir();
+
+    my %lockmap;
+    Cf::TieFile(%lockmap, "$vardir/locks");
+    eval {
+	if (defined $lockmap{$name}) {
+	    my ($lockpid, $locktime) = split(' ', $lockmap{$name});
+	    if ($PID != $lockpid) {
+		die "can't unlock $name - held by process $lockpid\n";
+	    }
+	    delete $lockmap{$name};
+	}
+    };
+    Cf::UntieFile(%lockmap);
+
+    # Throw error if unlock failed
+    die $@ if $@;
+}
+
+#----------------------------------------------------------------------
 package Cf::FileInfo;
 use Class::Struct;
 
@@ -3699,9 +3724,8 @@ package Cf::Module;
 sub require() {
     my $self = shift;
     unless (-f $self->get_config_flag()) {
-	$self->lockop("require");
+	my $lock = $self->lockop("require");
 	$self->configure();
-	$self->unlockop("require");
     }
 }
 
@@ -3709,14 +3733,7 @@ sub lockop($$) {
     my $self = shift;
     my ($op) = @_;
     my $name = $self->{name};
-    Cf::Lock("$name:$op");
-} 
-
-sub unlockop($$) {
-    my $self = shift;
-    my ($op) = @_;
-    my $name = $self->{name};
-    Cf::Unlock("$name:$op");
+    return new Cf::Lock("$name:$op");
 } 
 
 sub get_config_flag() {
