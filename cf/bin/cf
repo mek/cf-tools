@@ -40,6 +40,8 @@
 #
 # Re-eval flock use - didnt realize it was blocking. Right now I hold a lock
 # on the checksum table - that is probably a problem.
+#
+# Filters like cfengine ... only better
 
 
 use strict;
@@ -282,8 +284,8 @@ sub get_options($@) {
     my $parse_href = shift;
     my %opts = ();
     while (@_[0] =~ /^-/) {
-	my ($opt,$arg) = split('=', shift(@_), 2);
-	my $opt = uc($opt);
+	my ($origopt,$arg) = split('=', shift(@_), 2);
+	my $opt = uc($origopt);
 	last if $opt eq '--';
 
 	# Trim all leading dashes
@@ -291,11 +293,38 @@ sub get_options($@) {
 	# Replace remaining dashes with underscore
 	$opt =~ s/-/_/g;
 
-	die "bad option: $opt\n" unless defined $parse_href->{$opt};
 	my $parser = $parse_href->{$opt};
+
+	if (!defined $parser) {
+	    # Check if this is an implied variant for a boolean
+	    # option
+	    if ( $opt =~ /^NO_(.*)/ && defined $parse_href->{$1} ) {
+		$opt = $1;
+		$arg = 0;
+	    } elsif ( $opt =~ /(.*)_IS$/ && defined $parse_href->{$1} ) {
+		$opt = $1;
+		$arg = parse_bool(shift(@_));
+	    } else {
+		die "bad option: $origopt\n";
+	    }
+
+	    # Follow trail of aliases and inversions till we get to real
+	    # flag option
+	    while (($parser = $parse_href->{$opt}) ne '') {
+		if ($parser =~ /^(!)?(\w+)$/) {
+		    $opt = $2;
+		    $arg = !$arg if ($1 eq '!');
+		} else {
+		    die "bad option: $origopt\n";
+		}
+	    }
+	    $opts{$opt} = $arg;
+	    next;
+	}
+
 	if (!ref($parser)) {
 	    if ($parser =~ /^!(.*)/) {
-		# Inversion of option without argument
+		# Inversion of flag option
 		$opts{$1} = 0;
 		next;
 	    }
@@ -312,7 +341,7 @@ sub get_options($@) {
 	    }
 
 	    if ($parser eq '') {
-		# Option does not take an argument
+		# Option does not take an argument - its a boolean flag
 		$opts{$opt} = 1;
 		next;
 	    }
@@ -589,6 +618,16 @@ sub changes {
 }
 push(@EXPORT, '&changes');
 string_op('changes');
+
+# Get number of changes that occur during code block
+sub changed(&) {
+    my ($coderef) = @_;
+    my $initial = ChangeCount();
+    &$coderef;
+    return ChangeCount()-$initial;
+}
+push(@EXPORT, '&changed');
+string_op('changed');
 
 #-------
 # Module management
