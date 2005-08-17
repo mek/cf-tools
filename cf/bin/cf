@@ -3285,9 +3285,9 @@ sub getos {
 		    if ($line =~ /Red Hat ((Linux Advanced Server)|(Enterprise Linux.*)) release (\d[\d.]*)/) {
 			$osname = 'rhel';
 			$version = $4;
-		    } elsif ($line =~ /Red Hat .* release (\d[\d.]*)/) {
+		    } elsif ($line =~ /Red Hat .*release (\d[\d.]*)/) {
 			$version = $1;
-		    } elsif ($line =~ /Fedora Core .* release (\d[\d.]*)/) {
+		    } elsif ($line =~ /Fedora Core .*release (\d[\d.]*)/) {
 			$osname = 'fedora';
 			$version = $1;
 		    }
