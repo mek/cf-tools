@@ -883,20 +883,26 @@ sub get_registry($) {
 }
 push(@EXPORT, '&get_registry');
 
+# !!! Stupid perl - TieRegistry does an eval in its DESTROY method to any of
+# those onjects on your stack can cause exceptions to be mysteriously lost!!
+# So keep the keys in globals.
+my $setreg_key;
+
 sub setregistry {
     my ($optref, $path, $val) = get_options( {TYPE => \&parse_string,}, @_);
     my $type = $optref->{TYPE} || "SZ";
     my $keypath = dirname($path);
     my $name = basename($path);
-    my $key = get_registry($keypath);
-    set_registry($key, $name, $val, "REG_$type");
+    $setreg_key = get_registry($keypath);
+    set_registry($setreg_key, $name, $val, "REG_$type");
 }
 push(@EXPORT, '&setregistry');
 
 # Set registry values as defined in source file.
+
+my $loadreg_key;
 sub loadregistry {
     my ($optref, $path) = get_options( {}, @_);
-    my $key;
     my $lnum = 0;
     foreach my $line (split("\n", ReadFile($path))) {
 	$lnum += 1;
@@ -906,16 +912,16 @@ sub loadregistry {
 
 	if ($line =~ /^\[(.*)\]$/) {
 	    # New group - update base key location
-	    $key = get_registry($1);
+	    $loadreg_key = get_registry($1);
+	    die "unknown registry key: $1" unless defined $loadreg_key;
 	    next;
 	}
 
-	my ($relpath, $type, $val) = ($line =~ /^([^=]*)\s*=\s*(\w+:)?(.*)/)
+	my ($name, $x, $type, $val)
+		= ($line =~ /^([^=]*)\s*=\s*((\w+):)?(.*)/)
 		or die "bad line in reg file: $path:$lnum\n";
 	$type = defined($type) ? "REG_".uc($type) : "REG_SZ";
-	my $reldir = dirname($relpath);
-	my $name = basename($path);
-	set_registry($key->{$reldir}, $name, $val, $type);
+	set_registry($loadreg_key, $name, $val, $type);
     }
 }
 push(@EXPORT, '&loadregistry');
@@ -3470,8 +3476,8 @@ sub PreSpawn() {
     # (first change is flushed immediately).
     if (defined $change_file && $change_count > $last_read_changes+1) {
 	RealWriteFile($change_file, $change_count);
-	undef $change_count;
     }
+    undef $change_count;
 }
 
 
