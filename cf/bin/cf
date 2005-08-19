@@ -620,14 +620,13 @@ push(@EXPORT, '&changes');
 string_op('changes');
 
 # Get number of changes that occur during code block
-sub changed(&) {
+sub changes_in(&) {
     my ($coderef) = @_;
     my $initial = ChangeCount();
     &$coderef;
     return ChangeCount()-$initial;
 }
-push(@EXPORT, '&changed');
-string_op('changed');
+push(@EXPORT, '&changes_in');
 
 #-------
 # Module management
@@ -747,6 +746,7 @@ sub LoadPerlMod($) {
 	}
     }
     eval "package $package;"
+	. 'use strict;'
 	. 'BEGIN { import Cf; }'
 	. 'my $this_svc = $module;'
 	. 'my $this_dir = $dir;'
@@ -892,6 +892,33 @@ sub setregistry {
     set_registry($key, $name, $val, "REG_$type");
 }
 push(@EXPORT, '&setregistry');
+
+# Set registry values as defined in source file.
+sub loadregistry {
+    my ($optref, $path) = get_options( {}, @_);
+    my $key;
+    my $lnum = 0;
+    foreach my $line (split("\n", ReadFile($path))) {
+	$lnum += 1;
+
+	next if $line =~ /^\s*$/; # skip empty lines
+	next if $line =~ /^#/; # skip comments
+
+	if ($line =~ /^\[(.*)\]$/) {
+	    # New group - update base key location
+	    $key = get_registry($1);
+	    next;
+	}
+
+	my ($relpath, $type, $val) = ($line =~ /^([^=]*)\s*=\s*(\w+:)?(.*)/)
+		or die "bad line in reg file: $path:$lnum\n";
+	$type = defined($type) ? "REG_".uc($type) : "REG_SZ";
+	my $reldir = dirname($relpath);
+	my $name = basename($path);
+	set_registry($key->{$reldir}, $name, $val, $type);
+    }
+}
+push(@EXPORT, '&loadregistry');
 
 # Usage: SetRegistry($key, $name, $value, $type)
 # Make sure registry item has specified value/type. Create ancestral subkeys
@@ -3308,11 +3335,13 @@ sub getos {
 	my $class = $^O;
 	my $osname = 'unknown';
 	my $version = 'unknown';
+	my $cpu = 'unknown';
 	if ($is_win) {
 	    require Win32;
 	    $osname = (Win32::IsWinNT()) ? 'winnt' : 'win32';
 	    my ($junk, $major, $minor, $build, $id) = Win32::GetOSVersion();
 	    $version = "${major}.${minor}";
+	    $cpu = $ENV{'PROCESSOR_ARCHITECTURE'};
 	} else {
 	    if ( $class eq 'linux' ) {
 		my $rhat_file = '/etc/redhat-release';
@@ -3334,20 +3363,21 @@ sub getos {
 		    $osname = 'debian';
 		    $version = ReadFile($deb_file);
 		}
+		($cpu) = split(" ", ReadCommand("uname -m"));
 	    } elsif ( $class eq 'aix' ) {
 		$osname = 'aix';
-		$version = ReadCommand("uname -v");
-		chomp($version);
+		($version, $cpu) = split(" ", ReadCommand("uname -vm"));
 	    } else {
 		$osname = $class;
-		$version = ReadCommand("uname -r");
-		chomp($version);
+		($version, $cpu) = split(" ", ReadCommand("uname -rm"));
 	    }
 	}
 	$os{class} = $class;
 	$os{name} = $osname;
 	$os{version} = $version;
+	$os{cpu} = $cpu;
 	$os{os} = "$osname-$version";
+	$os{all} = "$osname-$version-$cpu";
 
 	$ENV{CF_OS} = join(':', %os);
     }
@@ -3714,6 +3744,10 @@ sub DESTROY($) {
 
     my %lockmap;
     Cf::TieFile(%lockmap, "$vardir/locks");
+
+    # Use local error var - otherwise destructor will wipe out exceptions
+    # from block where this object is defined (ug!)
+    local $@;
     eval {
 	if (defined $lockmap{$name}) {
 	    my ($lockpid, $locktime) = split(' ', $lockmap{$name});
@@ -3786,6 +3820,12 @@ sub set_configured() {
     Cf::RealWriteFile($self->get_config_flag(), "");
 }
 
+sub configure() {
+    my $self = shift;
+    $self->call("configure");
+    $self->set_configured();
+}
+
 sub write_temp($$$) {
     my $self = shift;
     my ($filename, $content) = @_;
@@ -3833,11 +3873,6 @@ sub call {
 	    or die $self->{name}.":$function failed\n";
 }
 
-sub configure() {
-    my $self = shift;
-    $self->call("configure");
-    $self->set_configured();
-}
 }
 
 #----------------------------------------------------------------------
@@ -3872,11 +3907,6 @@ sub call {
     return (scalar(@results) == 1) ? $results[0] : @results;
 }
 
-sub configure() {
-    my $self = shift;
-    $self->call("configure");
-    $self->set_configured();
-}
 }
 
 #----------------------------------------------------------------------
