@@ -619,15 +619,6 @@ sub changes {
 push(@EXPORT, '&changes');
 string_op('changes');
 
-# Get number of changes that occur during code block
-sub changes_in(&) {
-    my ($coderef) = @_;
-    my $initial = ChangeCount();
-    &$coderef;
-    return ChangeCount()-$initial;
-}
-push(@EXPORT, '&changes_in');
-
 #-------
 # Module management
 
