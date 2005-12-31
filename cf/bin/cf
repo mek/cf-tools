@@ -38,8 +38,8 @@
 # Make Lock() follow cfengine's adaptive lock behavior:
 # http://www.skipitaris.com/pub/lisa/main.html
 #
-# Re-eval flock use - didnt realize it was blocking. Right now I hold a lock
-# on the checksum table - that is probably a problem.
+# Re-evaluate flock use - didnt realize it was blocking. Right now I hold a
+# lock on the checksum table - that is probably a problem.
 #
 # Filters like cfengine ... only better
 
@@ -1894,24 +1894,6 @@ sub Age($) {
 
 #----------------------------------------------------------------------
 # (safe) System modifying routines.
-
-=pod
-
-=item CheckFile(path [, option => value ..])
-
-Verify that specified file matches criteria in options.
-
-    OWNER
-    GROUP
-    MODE
-
-Also obeys the following options when checking
-
-    SKIP_MISSING
-    FOLLOW_LINKS
-    RECURSE
-
-=cut
 
 sub CheckFile($%) {
     my ($path, %opts) = @_;
@@ -3989,37 +3971,145 @@ sample - Using cf
 
 cf [I<options>] I<cf-command> [I<comand-options>] [I<arg> ..]
 
- Options:
+ Global Options:
     --debug, -d			Display debugging messages
     --inform, -I		Display any changes made
     --dry-run, --test, -n	Just pretend to make changes
-    --splay=minutes		Random delay at start
+    --log 1/0/syslog:facility	Set log mode
+    --splay minutes		Random delay at start
     --help			Display this page
 
  Commands:
+   changes [base-count]		get count of config changes performed so far
+				(since last count - or since session started if
+				no base count is provided)
    copy src dest		Copy src file(s) to dest
+   debug message ..		Log debugging message
+   deletelines file pattern	
    directory dir ..		Create directory(s)
+   disable [-rotate] file ..	Remove or rotate files
+   error message ..		Log error message
    file path ..			Create file or fix attributes
    fix path ..			Fix file attributes
+   getmount file		Get mount-point for specified path
+   getos [part]			Get operating system info
+   gettemp dest			Get temporary path name to use when preparing
+   				new contents for specified file (see movetemp)
+   geturl url [dest]		Get contents of specified URL. If dest is
+   				specified then save contents in that file,
+				otherwise return contents of URL.
+   initshell			Returns shell command to initialize current
+   				process as a cf module. Should be sourced (.)
+				by shell
+   
    link src dest		Link dest to src
+   loadregistry src		Load (and apply) registry settings from
+   				specified file
    man				Display manual page
-   module:function arg ..
-   require module ..
+   markchange message		log that change occured (not using cf
+   				primitives - advanced use only)
+   movetemp dest		Move temporary file into specified final
+				destination. The temp file location should have
+				been acquired using gettemp.
+   purge			Remove obsolete entries for stated databases
+   				(periodic maintenance)
+   rcopy src-url dest		Copy files from network volume to dest
+   require module ..		Configure modules (if not already configured)
    run cmd arg ..		Execute external command
-   rcopy src dest		Copy files from network volume to dest
    setline path pat line	Make sure file contains line
+   setregistry keypath val	Set specified to value (windows only)
+   showlog			Return contents of current log.
+   tidy file ..			Remove specified files
    toc dir			Generate table-of-contents for directory
+   touch path ..		Set modification time of files to now.
+   updating			Check if really updating (no dry run)
+   warning message ..		Log warning message.
    write file content		Write specified data to file
+
+   module:function arg ..	call extension module
 
  Command Options:
     --changetype
-    --checktype
-    --group group
-    --mode permission
-    --purge
-    --recurse depth
-    --skipmissing
-    --user user
+    Allow file types to be changed (for example, replace regular files with
+    links).
 
+    --checktype
+    Don't allow file types to be changed (opposite of --changetype). Default.
+
+    --dirmode permission
+    In recursive operation, use this permissions for directories (override
+    any --mode option)
+
+    --group group
+    -g group
+    Set file group to specified group name or ID.
+
+    --mode permission
+    -m permission
+    Set file permission bits to speficied value (chmod style relative values
+    accepted too - "a+r")
+
+    --purge
+    --delete
+    -d
+    Remove target files with corresponding source files.
+
+    --recurse depth
+    -r depth
+    Recursively examine files.
+
+    --skipmissing
+    Ignore if file to be checked does not exist.
+
+    --user user
+    -u user
+    --owner user
+    Set file owner to specified user name or ID.
+
+    --rmdir
+
+    --follow
+    --followlinks
+
+    --rotate count
+
+    --atime days
+    --age days
+
+    --mtime days
+
+    --ctime days
+
+    --include regex
+    -i regex
+
+    --exclude regex
+    -e regex
+
+    --backup all|original|last|none
+    --backupdir path
+
+    --copytype mtime|cksum|md5|binary
+
+    --verify none|cksum|md5|binary
+
+    --newtime
+    Set modification time of copied files to current time (default is
+    to preserve modification time of the source file)
+
+    --field cksum|md5
+    Include specified field in table of contents. This option can be repeated.
+
+    --timeout secs
+
+    --chdir path
+
+    --preview
+
+    --tempdir path
+
+    --umount
+
+    --prepend bool
 
 =cut
