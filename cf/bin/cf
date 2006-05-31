@@ -275,6 +275,10 @@ my %parse_opt = (
     UMOUNT => '',
 
     PREPEND => \&parse_bool,
+
+    ONFAIL => sub { parse_enum(uc($_[0]),
+	'ABORT', 'ERROR', 'WARNING', 'INFO'
+    ) },
 );
 
 # Usage: get_options parser-hashref arg ..
@@ -1164,6 +1168,26 @@ sub Undo {
 	push(@args, Encode($arg));
     }
     Log(undef, 'undo', 'notice', join(' ', @args));
+}
+
+# Handle failure according to ONFAIL option $action.
+
+sub Fail($$) {
+    my ($action, $message) = @_;
+
+    if ($action eq 'ABORT') {
+	die $@;
+    } elsif ($action eq 'ERROR') {
+	Error($@);
+    } elsif ($action eq 'WARNING') {
+	Warn($@);
+    } elsif ($action eq 'ERROR') {
+	Error($@);
+    } elsif ($action eq 'INFO') {
+	Info($@);
+    } else {
+	die "unknown Fail action: $action. $@";
+    }
 }
 
 #----------------------------------------------------------------------
@@ -2696,7 +2720,8 @@ sub Tidy ($%) {
 	# File matches criteria
 	if ($ftype ne 'DIR' || $opts{RMDIR}) {
 	    # File is not a directory, or directory removal is allowed.
-	    RemoveFile($path, %opts);
+	    eval { RemoveFile($path, %opts); };
+	    Fail($opts{ONFAIL}, $@) if ($@);
 	    return;
 	}
     }
