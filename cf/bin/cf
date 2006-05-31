@@ -2908,7 +2908,7 @@ sub FileSync {
 
     if ($srctype eq 'LINK') {
 	my $target = ReadLink($srcpath) or die $!;
-	MakeLink($target, $destpath);
+	MakeLink($target, $destpath, %opts);
 
 	# No need to set permissions on link - or is there!?
 	return
