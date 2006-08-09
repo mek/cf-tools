@@ -2004,11 +2004,15 @@ sub CheckFile($%) {
 	}
     }
     #!!! collapse the two chown() calls into one if possible?
+    
+    my $mode = $opts{'MODE'};
+    if ($fi->type eq 'DIR') {
+	$mode = $opts{'DIRMODE'} if defined $opts{'DIRMODE'};
+    }
 
-    if (defined $opts{'MODE'}) {
+    if ($mode) {
 	# check mode (permissions) of file
 
-	my $mode = $opts{'MODE'};
 	if ($mode =~ /^\d/) {
 	    # Numeric mode. Convert from octal if it has a leading 0.
 	    $mode = oct($mode) if $mode =~ /^0/;
