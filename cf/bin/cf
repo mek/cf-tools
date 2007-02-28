@@ -19,12 +19,14 @@
 
 # $Id$
 
+# All that is absolutely required is perl5 and its standard modules - but
+# the following optional modules provide extra features or performance:
+#
+# File::Chmod
+
 # TODO !!!
 #
-# Something to ensure we get the correct perl? PATH reset in call_module()
-# could remove the current (preferred) PERL.
-#
-# Complete tracking  changes in DRYRUN mode so that later file comparisons
+# Complete tracking changes in DRYRUN mode so that later file comparisons
 # are made correctly.
 #
 # Consistent path manipulation
@@ -1857,6 +1859,8 @@ sub glob2pat {
     $globstr =~ s{(.)} { $patmap{$1} || "\Q$1" }ge;
     return '^' . $globstr . '$';
 }
+push(@EXPORT, '&glob2pat');
+string_op('glob2pat');
 
 # Pattern matching flags for file include/exclude lists
 my $EX_FULLPATH = 1;	# Match against full path (default is to just match
@@ -3364,6 +3368,11 @@ sub getos {
 			$version = $1;
 		    } elsif ($line =~ /Fedora Core .*release (\d[\d.]*)/) {
 			$osname = 'fedora';
+			$version = $1;
+		    } elsif ($line =~ /CentOS .*release (\d[\d.]*)/) {
+			# Not really Redhat-Enterprise (its Centos),
+			# but it is binary compatible with rhel.
+			$osname = 'rhel';
 			$version = $1;
 		    }
 		} elsif ( -f $deb_file ) {
