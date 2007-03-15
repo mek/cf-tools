@@ -575,6 +575,17 @@ sub UnsysPath($) {
 }
 
 #-------
+# Introspective help
+
+sub helpcommands {
+    foreach my $cmd (sort(@EXPORT)) {
+	$cmd =~ s/^&//;
+	print "  $cmd\n";
+    }
+}
+push(@EXPORT, '&helpcommands');
+
+#-------
 # Change tracking
 
 # Return boolean: 1 if in update mode, 0 if in dry-run mode.
