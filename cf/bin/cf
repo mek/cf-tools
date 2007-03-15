@@ -23,18 +23,22 @@
 # the following optional modules provide extra features or performance:
 #
 # File::Chmod
+# ...
 
 # TODO !!!
 #
+# Strict checking on options - i've been burned by passing options that are
+# silently ignored.
+#
+# info commands to learn available base command, module, module commands,
+# and even command options.
+#
 # Complete tracking changes in DRYRUN mode so that later file comparisons
-# are made correctly.
+# are made correctly - particulary copy is not tracked.
 #
 # Consistent path manipulation
 #
 # Implement undo from log
-#
-# Strict checking on options - i've been burned by passing options that are
-# silently ignored.
 #
 # Make Lock() follow cfengine's adaptive lock behavior:
 # http://www.skipitaris.com/pub/lisa/main.html
@@ -1236,8 +1240,7 @@ sub RealMakeDir(@) {
 sub ReadFile {
     my ($filename) = @_;
     if (!$update) {
-	my $fakepath = GetFake($filename);
-	$filename = $fakepath if (-f $fakepath);
+	$filename = GetFake($filename);
     }
     my $contents = RawReadFile($filename);
     chomp($contents);
@@ -2122,7 +2125,19 @@ sub CopyFile {
     }
 
     MarkChange("copying $srcpath to $destpath");
-    return unless ($update);
+    if (!$update) {
+	# Not really copying - fake it.
+
+	# No faking available for remote destinations.
+	return if ($opts{REMOTE_DEST});
+
+	if ($opts{REMOTE_SRC}) {
+	    Geturl($srcpath, MakeFake($destpath));
+	} else {
+	    SetFake($destpath, $srcpath);
+	}
+	return
+    }
 
     if ($opts{REMOTE_DEST}) {
 	# Copying to remote location.
@@ -2204,9 +2219,42 @@ sub TouchFile($%) {
 
 # Get path for storing dry-run contents of file.
 
-sub GetFake($) {
+sub GetFake($;$) {
     my ($path) = @_;
-    return GetSession()."/fake".AbsolutePath($path);
+
+    # See if we have a fake copy of file in session files.
+    my $fake = GetSession()."/fake".AbsolutePath($path);
+    if (-f $fake) {
+	return $fake;
+    }
+
+    # See if we have pointer to fake copy of file.
+    $fake = GetSession()."/fakepath".AbsolutePath($path);
+    if (-f $fake) {
+	return RawReadFile($fake);
+    }
+
+    return $path;
+}
+
+# Get path for storing dry-run contents of file.
+
+sub MakeFake($) {
+    my ($path) = @_;
+
+    my $fake = GetSession()."/fake".AbsolutePath($path);
+    Debug("new fake path for $path: $fake");
+    return $fake;
+}
+
+# Define alternate path that holds contents of file for dry-run (would have
+# copied $fake to $path).
+
+sub SetFake($$) {
+    my ($path, $fake) = @_;
+    Debug("new fake path for $path: $fake");
+    my $fakefile = GetSession()."/fakepath".AbsolutePath($path);
+    RealWriteFile($fakefile, $fake);
 }
 
 # Create/replace $filename with data in $content - appends a newline.
@@ -2229,7 +2277,7 @@ sub WriteFile {
 
     MarkChange("writing $destpath");
     if (!$update) {
-	RealWriteFile(GetFake($destpath),$content);
+	RealWriteFile(MakeFake($destpath),$content);
 	return
     }
 

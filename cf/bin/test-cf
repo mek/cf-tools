@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 71;
+use Test::More tests => 73;
 use English;
 use File::Temp;
 use File::stat;
@@ -148,6 +148,7 @@ Cf::RealRemoveTree("$tmpdir/sub");
     my $src = "$tmpdir/a";
     my $dest = "$tmpdir/b";
     my $src2 = "$tmpdir/c";
+    my $dest2 = "$tmpdir/d";
 
     `echo hi >$src`;
     copy(-mode => 755, $src, $dest);
@@ -170,6 +171,12 @@ Cf::RealRemoveTree("$tmpdir/sub");
     `echo bye >$dest`;
     copy(-copytype => 'cksum', $src, $dest);
     is(`diff $src $dest`, "", "copy(), cksum");
+
+    Cf::SetFlags('DRYRUN');
+    copy(-copytype => 'cksum', $src, $dest2);
+    is(read_file($dest2), "hi", "copy(), dryrun");
+    Cf::SetFlags('DRYRUN=0');
+    ok(! -f $dest2, "copy(), dryrun part 2");
 
     unlink($src, $src2, $dest);
 }
