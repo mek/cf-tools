@@ -2131,7 +2131,14 @@ sub CopyFile {
 
     if ($same) {
 	# File content matches, make sure options match then return.
-	CheckFile($destpath, %opts, RECURSE => 0) if (scalar(%opts));
+	# Override RECURSE option - want just this file checke even if copy
+	# is recursive.
+	# Override EXCLUDE option - meant for source path, not dest (and
+	# already checked).
+	# !!! - should we explicitly pass the opts we want, instead of
+	# blanking the ones we dont?
+	CheckFile($destpath, %opts, EXCLUDE=>undef, RECURSE => 0)
+		if (scalar(%opts));
 	return;
     }
 
