@@ -1988,6 +1988,7 @@ sub CheckFile($%) {
 	if ($uid != $fi->uid) {
 	    MarkChange("setting owner of $path to $user");
 	    if ($update) {
+		Undo("fix", $path, -user=> $fi->uid);
 		chown($uid, -1, $path) or die $!;
 		$fi = GetFileInfo($path);
 	    }
@@ -2016,6 +2017,7 @@ sub CheckFile($%) {
 	if ($gid != $fi->gid) {
 	    MarkChange("setting group of $path to $group");
 	    if ($update) {
+		Undo("fix", $path, -group=> $fi->gid);
 		chown(-1, $gid, $path) or die $!;
 		$fi = GetFileInfo($path);
 	    }
@@ -2050,6 +2052,7 @@ sub CheckFile($%) {
 	if ($mode != ($fi->perm) ) {
 	    MarkChange("setting mode of $path to $mode_str");
 	    if ($update) {
+		Undo("fix", $path, -mode=> $fi->perm);
 		chmod($mode, $path) or die $!;
 	    }
 	}
@@ -2261,6 +2264,7 @@ sub MakeFake($) {
     my ($path) = @_;
 
     my $fake = GetSession()."/fake".AbsolutePath($path);
+    RealMakeDir(dirname($fake));
     Debug("new fake path for $path: $fake");
     return $fake;
 }
