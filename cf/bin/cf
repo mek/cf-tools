@@ -1361,6 +1361,9 @@ my %tieinfo = ();
 sub TieFile(\%$) {
     my ($mapref, $path) = @_;
 
+    return if tied %{$mapref};
+    Debug("tieing $path");
+
     RealMakeDir(dirname($path));
     my $lock = "$path.lock";
     my $lockfh = new IO::File;
@@ -1375,8 +1378,13 @@ sub TieFile(\%$) {
 
 sub UntieFile(\%) {
     my ($mapref) = @_;
+
+    return unless tied %{$mapref};
+
     my ($path, $lockfh) = @{ $tieinfo{$mapref} };
     my $lock = "$path.lock";
+
+    Debug("untie-ing $path");
 
     untie %{$mapref};
     flock($lockfh, LOCK_UN) or die "can't unlock $lock $!\n";
@@ -1725,7 +1733,7 @@ sub MD5 ($) {
 my %cksums = ();
 sub GetCksum($) {
     my ($path) = @_;
-    TieFile(%cksums, "$vardir/cksum") unless tied %cksums;
+    TieFile(%cksums, "$vardir/cksum");
     return split(' ', $cksums{$path}, 2);
     # or use unpack() / pack ?
 }
@@ -1734,9 +1742,13 @@ sub GetCksum($) {
 
 sub SetCksum($$$) {
     my ($path, $sum, $mtime) = @_;
-    TieFile(%cksums, "$vardir/cksum") unless tied %cksums;
+    TieFile(%cksums, "$vardir/cksum");
     if (defined $sum) {
-	$cksums{$path} = "$sum $mtime";
+	Debug("about to set cksum of $path to '$sum $mtime'");
+	my $status = ($cksums{$path} = "$sum $mtime");
+	if (!defined $status) {
+	    die "failed to set cksum for $path: $!\n";
+	}
     } else {
 	delete $cksums{$path};
     }
@@ -1745,7 +1757,7 @@ sub SetCksum($$$) {
 
 # Remove obsolete entries from the checksum cache.
 sub PurgeCksum() {
-    TieFile(%cksums, "$vardir/cksum") unless tied %cksums;
+    TieFile(%cksums, "$vardir/cksum");
     while (my ($path, $info) = each(%cksums)) {
 	my ($sum, $mtime) = split(' ', $cksums{$path}, 2);
 	my $fi = GetFileInfo($path);
@@ -1771,7 +1783,10 @@ sub Cksum ($) {
     # Look for checksum in file cache - use cached value if file modtime has
     # not changed since the cached was computed.
     my ($sum, $mtime) = GetCksum($path);
-    return $sum if $mtime == $fi->mtime;
+    if ($mtime == $fi->mtime) {
+	Debug("using cached cksum for $path ($sum)");
+	return $sum;
+    }
 
     if (not defined $cksum_ref) {
 	# figure out how to compute checksum
@@ -1788,6 +1803,7 @@ sub Cksum ($) {
 
     # compute checksum
     $sum = $cksum_ref->($path);
+    Debug("computed and saving cksum for $path ($sum)");
 
     SetCksum($path, $sum, $fi->mtime);
     return $sum;
@@ -2751,7 +2767,7 @@ sub LoadTOC($$$) {
 	}
 
 	$file_info{$fullpath} = $fi;
-	Debug("added TOC entry for $fullpath");
+	#Debug("added TOC entry for $fullpath");
 	$count++;
 
 	# Append this item to the parent's directory listing.
@@ -3548,7 +3564,7 @@ sub PreSpawn() {
     }
 
     # Flush file checksums.
-    UntieFile(%cksums) if tied %cksums;
+    UntieFile(%cksums);
 
     # Flush change count.
     # Only need to do this if we have an external change file and more than
