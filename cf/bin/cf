@@ -403,29 +403,48 @@ push(@EXPORT, '&parse_args');
 # command line scripts.
 
 my %op_results = ();
+my %op_briefs = ();
 
 sub OpResult($) {
     my ($opname) = @_;
     return $op_results{$opname};
 }
 
-sub SetOpResult($$$) {
-    my ($module, $opname, $type) = @_;
-    if ($module =~ /^Cf::Module::(.*)/) {
+sub SetOpResult($$$$) {
+    my ($package, $opname, $type, $brief) = @_;
+    if ($package =~ /^Cf::Module::(.*)/) {
 	$opname = "$1:$opname";
     }
     $op_results{$opname} = $type;
+    $op_briefs{$opname} = $brief;
 }
 
-sub string_op($) {
-    my ($opname) = @_;
-    SetOpResult(caller(), $opname, 'string');
+sub GetModuleOps($) {
+    my ($module) = @_;
+    my %results = ('configure', 'setup this module on host');
+    foreach my $key (keys(%op_briefs)) {
+	if ($key =~ /^$module:(.*)/) {
+	    $results{$1} = $op_briefs{$key};
+	}
+    }
+    return %results;
+}
+
+sub null_op($;$) {
+    my ($opname, $brief) = @_;
+    SetOpResult(caller(), $opname, undef, $brief);
+}
+push(@EXPORT, '&null_op');
+
+sub string_op($;$) {
+    my ($opname, $brief) = @_;
+    SetOpResult(caller(), $opname, 'string', $brief);
 }
 push(@EXPORT, '&string_op');
 
-sub boolean_op($) {
-    my ($opname) = @_;
-    SetOpResult(caller(), $opname, 'boolean');
+sub boolean_op($;$) {
+    my ($opname, $brief) = @_;
+    SetOpResult(caller(), $opname, 'boolean', $brief);
 }
 push(@EXPORT, '&boolean_op');
 
@@ -577,13 +596,42 @@ sub UnsysPath($) {
 #-------
 # Introspective help
 
-sub helpcommands {
+sub helpops {
     foreach my $cmd (sort(@EXPORT)) {
 	$cmd =~ s/^&//;
 	print "  $cmd\n";
     }
 }
-push(@EXPORT, '&helpcommands');
+push(@EXPORT, '&helpops');
+
+sub helpmodops {
+    my ($o, $modname) = get_options({}, @_);
+    my %briefs = GetModule($modname)->GetOps();
+
+    foreach my $op (sort(keys(%briefs))) {
+	print "$op - $briefs{$op}\n";
+    }
+}
+push(@EXPORT, '&helpmodops');
+
+sub helpmodules {
+    my %modbriefs = ();
+    my $base = GetBase();
+    foreach my $script (
+	    glob("$base/*/configure.pl"),
+	    glob("$base/*/configure"),
+	    ) {
+	my $module = basename(dirname($script));
+	open(FILE, "<$script") or die "can't open $module: $!\n";
+	my ($brief) = grep("^#BRIEF:", split(<FILE>));
+	$brief =~ s/^#BRIEF: *//;
+	$modbriefs{$module} = $brief;
+    }
+    foreach my $module (sort(keys(%modbriefs))) {
+	print "$module - $modbriefs{$module}\n";
+    }
+}
+push(@EXPORT, '&helpmodules');
 
 #-------
 # Change tracking
@@ -4009,6 +4057,18 @@ sub call {
     return (scalar(@results) == 1) ? $results[0] : @results;
 }
 
+# Get list of export operations and brief descriptions (hash converted to
+# list)
+sub GetOps {
+    my $self = shift;
+    my $package = $self->{package};
+
+    my $module = $package;
+    $module =~ s/^Cf::Module:://;
+
+    return Cf::GetModuleOps($module);
+}
+
 }
 
 #----------------------------------------------------------------------
@@ -4043,8 +4103,9 @@ my %cmd_alias = (
 );
 
 sub main() {
+    usage(1) if ($ARGV[0] eq '-?' or $ARGV[0] eq '--help');
     my ($cmd, @args) = Cf::parse_args(@ARGV);
-    usage(0) if (!defined $cmd);
+    usage(1) if (!defined $cmd);
 
     # perform command
 
