@@ -2919,8 +2919,7 @@ sub StrSetLine($$$$;$) {
 	}
 	MarkChange("adding $line in $src");
     } elsif ($subs == 1) {
-	return if ($new eq $str);
-	MarkChange("changing $pattern to $line in $src");
+	MarkChange("changing $pattern to $line in $src") unless ($new eq $str);
     } else {
 	die "setline failed: $subs lines matched $pattern in $src\n";
     }
