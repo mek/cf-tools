@@ -1447,14 +1447,24 @@ sub UntieFile(\%) {
 sub VerifiedKill($) {
     my ($pid) = @_;
 
-    kill('INT', $pid) or return 1;
-    sleep(2);
-    kill('TERM', $pid) or return 1;
-    sleep(2);
-    kill('KILL', $pid) or return 1;
-    sleep(1);
-    kill(0, $pid) or return 1;
+    kill('INT', $pid);
+    kill(0, $pid) or return 1; # Return 1 if process cannot be reached
 
+    sleep(2);
+
+    kill('TERM', $pid);
+    kill(0, $pid) or return 1; # Return 1 if process cannot be reached
+
+    sleep(2);
+
+    kill('KILL', $pid);
+    kill(0, $pid) or return 1; # Return 1 if process cannot be reached
+
+    sleep(1);
+
+    kill(0, $pid) or return 1; # Return 1 if process cannot be reached
+
+    # We failed
     return 0;
 }
 
@@ -1779,6 +1789,8 @@ sub MD5 ($) {
 # Lookup checksum (and modtime) from checksum cache
 
 my %cksums = ();
+my $cksum_deletes = 0;	# How many times have we deleted corrupt tied=db ?
+
 sub GetCksum($) {
     my ($path) = @_;
     TieFile(%cksums, "$vardir/cksum");
@@ -1795,7 +1807,28 @@ sub SetCksum($$$) {
 	Debug("about to set cksum of $path to '$sum $mtime'");
 	my $status = ($cksums{$path} = "$sum $mtime");
 	if (!defined $status) {
-	    die "failed to set cksum for $path: $!\n";
+	    # Annoying - sometimes updates to database files and there is no
+	    # rhyme or reason (seeing this problem with berkeley db) -
+	    # removing the cache seems to fix it. Try removing the cksum
+	    # file but only try once per run:
+	    if ($cksum_deletes > 0) {
+		die "failed to set cksum for $path (already removed db): $!\n";
+	    }
+
+	    # Delete the database files
+	    UntieFile(%cksums);
+	    foreach my $file (glob("$vardir/cksum*"))  {
+		unlink($file) or die "can't remove $file: $!\n";
+	    }
+	    $cksum_deletes += 1;
+	    TieFile(%cksums, "$vardir/cksum");
+
+	    # Try the update again
+	    $status = ($cksums{$path} = "$sum $mtime");
+
+	    if (!defined $status) {
+		die "failed to set cksum for $path (after deleting db): $!\n";
+	    }
 	}
     } else {
 	delete $cksums{$path};
@@ -3157,7 +3190,16 @@ sub run {
 	if ($@ eq "timeout\n") {
 	    Info("timeout: $cmd");
 	    kill('INT', $pid);
-	    close(PIPE);
+	    # Now close - but may hang if process is wedged to use timeout
+	    # again.
+	    eval {
+		local $SIG{ALRM} = sub { die "timeout\n"; };
+		alarm $timeout if ($timeout > 0);
+
+		close(PIPE);
+
+		alarm 0;
+	    };
 	    VerifiedKill($pid) or Warn("can't kill timed out command: $cmd");
 	    die "command timed out ($cmd)\n";
 	} elsif ($@) {
