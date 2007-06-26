@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 73;
+use Test::More tests => 74;
 use English;
 use File::Temp;
 use File::stat;
@@ -194,6 +194,10 @@ Cf::RealRemoveTree("$tmpdir/sub");
 
     rcopy("file://$src/f1", "$dest/x");
     is(`cat $src/f1`, `cat $dest/x`, "rcopy(), within tree");
+
+    rcopy(-mode=>"755", "file://$src/f1", "$dest/x");
+    is(sprintf("%04o", stat("$dest/x")->mode & 07777), "0755",
+	    "rcopy(), perms");
 
     rcopy(-r => 4, -purge, "file://$src", $dest);
     tidy(-r => 4, -i => '.cftoc', $src); # remove toc files for comparison
