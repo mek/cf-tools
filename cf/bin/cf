@@ -130,6 +130,7 @@ my %flags = (
     TEMPDIR => '',	# where to put temp files
     SCF_SSH => 'ssh',	# ssh used for scf
     SCF_CF => 'cf',	# Path to cf on remote machines (scf)
+    DELETE_CORRUPT_DB => 0,	# Path to cf on remote machines (scf)
 );
 
 # Boolean: actually perform updates (as opposed to going
@@ -1811,6 +1812,10 @@ sub SetCksum($$$) {
 	    # rhyme or reason (seeing this problem with berkeley db) -
 	    # removing the cache seems to fix it. Try removing the cksum
 	    # file but only try once per run:
+
+	    die "failed to set cksum for $path\n"
+		    unless $flags{DELETE_CORRUPT_DB};
+
 	    if ($cksum_deletes > 0) {
 		die "failed to set cksum for $path (already removed db): $!\n";
 	    }
