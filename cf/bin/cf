@@ -2996,9 +2996,13 @@ sub StrDeleteLines($$$) {
     my @newlines = grep(!/$pattern/, @origlines);
 
     my $delcount = @origlines - @newlines;
-    return if ($delcount == 0);
+    return $str if ($delcount == 0);
     MarkChange("deleting $delcount line(s) that match $pattern in $src");
     my $new = join("\n", @newlines);
+    if (@newlines && $str =~ /\n$/) {
+	# Result is not empty, add trailing newline.
+	$new .= "\n";
+    }
     return $new;
 }
 sub str_deletelines {
