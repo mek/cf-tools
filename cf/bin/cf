@@ -1821,6 +1821,7 @@ sub SetCksum($$$) {
 	    }
 
 	    # Delete the database files
+	    Warn("removing corrupt cksum files");
 	    UntieFile(%cksums);
 	    foreach my $file (glob("$vardir/cksum*"))  {
 		unlink($file) or die "can't remove $file: $!\n";
@@ -3866,7 +3867,12 @@ push(@EXPORT, '&purge');
 #--------
 # Initialize environment
 
+# Save copy of flags in environ as it will be reset when we load settings
+# from the file
+my $envflags = $ENV{CF_FLAGS};
+
 # Determine base of configuration script/module tree
+
 if (not defined $cfbase) {
     # Locate configuration library.
 
@@ -3886,7 +3892,7 @@ if (not defined $cfbase) {
 }
 
 # Get mode settings from environment.
-SetFlags(split(':', $ENV{CF_FLAGS}));
+SetFlags(split(':', $envflags));
 
 # Module Cleanup
 
