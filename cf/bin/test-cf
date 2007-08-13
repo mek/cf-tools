@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 76;
+use Test::More tests => 83;
 use English;
 use File::Temp;
 use File::stat;
@@ -468,3 +468,20 @@ ok(Cf::IsExcluded( [
     unlink($tmp);
 }
 
+# Checksum tests (perf comparison)
+
+{
+    my $tmp = "$tmpdir/foo";
+    unlink($tmp);
+
+    for my $size (1,10,100,1000,2000,5000,10000) {
+	open(FILE, ">$tmp") or die $!;
+	syswrite(FILE, "x"x$size, $size);
+	close(FILE) or die $!;
+	my $intsum = Cf::CksumInt($tmp);
+	my $extsum = Cf::CksumExt($tmp);
+	is($intsum, $extsum, "cksum int/ext comparsion, size=$size");
+    }
+
+    unlink($tmp);
+}

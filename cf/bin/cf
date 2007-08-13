@@ -1882,6 +1882,7 @@ sub Cksum ($) {
 	};
 	if ($@) {
 	    # Can't load perl module - use external command instead.
+	    Debug("String::CRC::Cksum is not available");
 	    $cksum_ref = \&CksumExt;
 	} else {
 	    $cksum_ref = \&CksumInt;
@@ -1889,7 +1890,13 @@ sub Cksum ($) {
     }
 
     # compute checksum
-    $sum = $cksum_ref->($path);
+    if ($fi->size >= 1000) {
+	# File size over 1k - experiments show that about where it cheaper
+	# to fork a binary check.
+	$sum = CksumExt($path);
+    } else {
+	$sum = $cksum_ref->($path);
+    }
     Debug("computed and saving cksum for $path ($sum)");
 
     SetCksum($path, $sum, $fi->mtime);
