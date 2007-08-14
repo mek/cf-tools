@@ -1916,7 +1916,7 @@ sub CksumInt($) {
 sub CksumExt($) {
     my ($path) = @_;
     my $fh = new IO::File;
-    open($fh, "cksum $path|") or die $!;
+    open($fh, "cksum \Q$path\E|") or die $!;
     my $line = <$fh>;
     my ($sum) = split(' ', $line);
     close($fh) or die $!;
