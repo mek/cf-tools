@@ -1668,8 +1668,8 @@ sub MoveTemp($$%) {
 
     Backup($target, %opts);
     my $old;
-    if (! -l $target && -d _) {
-	# Target is a real directory - can't replace with rename. Move
+    if (-l $target || -d _) {
+	# Target is a link or directory - can't replace with rename. Move
 	# target out of the way and we will remove the tree after temp is in
 	# place.
 	$old = MoveOld($target, %opts);
@@ -2324,7 +2324,13 @@ sub CopyFile {
 	die "$srcpath changed during copy" unless $same;
     }
 
-    MoveTemp($temp, $destpath, %opts);
+    # Override RECURSE option - want just this file checke even if copy
+    # is recursive.
+    # Override EXCLUDE option - meant for source path, not dest (and
+    # already checked).
+    # !!! - should we explicitly pass the opts we want, instead of
+    # blanking the ones we dont?
+    MoveTemp($temp, $destpath, %opts, EXCLUDE=>undef, RECURSE => 0);
 
     # Update checksum database
     SetCksum($destpath, $cksum, $ti->mtime);
@@ -2536,7 +2542,7 @@ sub Decode($) {
 sub MakeDir {
     my ($path, %opts) = @_;
 
-    my $path = FollowLinks($path);
+    $path = FollowLinks($path) if $opts{FOLLOW_LINKS};
     my $oldtype = CheckType($path, 'DIR', %opts);
     if ($oldtype eq 'DIR') {
 	# Directory already exists, make sure options match then return.

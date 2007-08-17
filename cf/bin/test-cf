@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 83;
+use Test::More tests => 86;
 use English;
 use File::Temp;
 use File::stat;
@@ -149,6 +149,9 @@ Cf::RealRemoveTree("$tmpdir/sub");
     my $dest = "$tmpdir/b";
     my $src2 = "$tmpdir/c";
     my $dest2 = "$tmpdir/d";
+    my $src3 = "$tmpdir/e";
+
+    mkdir($src3) or die $!;
 
     `echo hi >$src`;
     copy(-mode => 755, $src, $dest);
@@ -168,6 +171,12 @@ Cf::RealRemoveTree("$tmpdir/sub");
     copy(-copytype => 'cksum', $src2, $dest);
     is($changes, Cf::ChangeCount(), "copy(), cksum convergence2");
 
+    unlink($dest);
+    copy(-copytype => 'cksum', -mode=>"700", -include=>$src2, -exclude=>"*",
+    		$src2, $dest);
+    is(sprintf("%04o", stat($dest)->mode & 07777), "0700",
+	    "copy(), perms");
+
     `echo bye >$dest`;
     copy(-copytype => 'cksum', $src, $dest);
     is(`diff $src $dest`, "", "copy(), cksum");
@@ -178,7 +187,15 @@ Cf::RealRemoveTree("$tmpdir/sub");
     Cf::SetFlags('DRYRUN=0');
     ok(! -f $dest2, "copy(), dryrun part 2");
 
-    unlink($src, $src2, $dest);
+    unlink($dest);
+    symlink("foobar", $dest) or die $!;
+    copy(-copytype => 'cksum', -recurse=>10, '-changetype', $src3, $dest);
+    ok(-d $dest, "copy(), recurse");
+    ok(! -l $dest, "copy(), recurse and replace symlink");
+    Cf::RealRemoveTree($dest);
+
+    unlink($src, $src2);
+    Cf::RealRemoveTree($src3);
 }
 
 # rcopy()
@@ -195,6 +212,7 @@ Cf::RealRemoveTree("$tmpdir/sub");
     rcopy("file://$src/f1", "$dest/x");
     is(`cat $src/f1`, `cat $dest/x`, "rcopy(), within tree");
 
+    unlink("$dest/x");
     rcopy(-mode=>"755", "file://$src/f1", "$dest/x");
     is(sprintf("%04o", stat("$dest/x")->mode & 07777), "0755",
 	    "rcopy(), perms");
