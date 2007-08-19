@@ -1385,10 +1385,12 @@ sub TempName($%) {
 
     my $path = "$dest$suffix";
     if (length($tempdir)) {
+	# Want temporary files in alternate directory (default is the same
+	# directory as the destination)
 	if ($tempdir =~ m{\^/(.*)} ) {
 	    $tempdir = getmount(dirname($dest)) . "/$1";
 	}
-	MakeDir($tempdir);
+	MakeDir($tempdir, FOLLOW_LINKS=>1);
 	$path = "$tempdir/".basename($path);
     }
 
@@ -2277,12 +2279,9 @@ sub CopyFile {
 	SendPut($opts{REMOTE_DEST}, $destpath, RawReadFile($srcpath), @args);
 	return;
     }
-
     # Destination is local
 
-    # Make sure parent directories of $destpath exist
-    my $parent = dirname($destpath);
-    MakeDir($parent);
+    MakeParent($destpath);
 
     # Safe copy (copy to temp and then move into place)
     my $temp = TempName($destpath, %opts);
@@ -2419,10 +2418,7 @@ sub WriteFile {
 	return
     }
 
-    # Make sure parent directories of $destpath exist
-    my $parent = dirname($destpath);
-    MakeDir($parent);
-
+    MakeParent($destpath);
     my $temp = TempName($destpath, %opts);
     RealWriteFile($temp,$content);
     MoveTemp($temp, $destpath, %opts);
@@ -2442,10 +2438,7 @@ sub MakeLink {
     # Just print?
     return unless ($update);
 
-    # Make sure parent directories of $dest exist
-    my $parent = dirname($dest);
-    MakeDir($parent);
-
+    MakeParent($dest);
     my $temp = TempName($dest, %opts);
     symlink($src, $temp) or die $!;
     MoveTemp($temp, $dest, %opts);
@@ -2513,6 +2506,40 @@ sub FollowLinks($) {
     return $path;
 }
 
+# Ensure path is a directory with specified settings.
+
+sub MakeDir {
+    my ($path, %opts) = @_;
+
+    $path = FollowLinks($path) if $opts{FOLLOW_LINKS};
+
+    my $oldtype = CheckType($path, 'DIR', %opts);
+    if ($oldtype eq 'DIR') {
+	# Directory already exists, make sure options match then return.
+	CheckFile($path, %opts, RECURSE => 0) if (scalar(%opts));
+	return;
+    }
+
+    MarkChange("creating directory $path");
+
+    # Just print?
+    return unless ($update);
+
+    my $temp = TempName($path, %opts);
+    RealMakeDir($temp);
+    MoveTemp($temp, $path, %opts);
+}
+
+# Ensure parent directory for specified path exists
+
+sub MakeParent($) {
+    my ($path) = @_;
+    my $parent = dirname($path);
+
+    # Create the parent - dont break any existing links
+    MakeDir($parent, FOLLOW_LINKS=>1);
+}
+
 #----------------------------------------------------------------------
 # Simple network encoding
 # Basically URL encoding? (but don't want dependency on full URL module).
@@ -2538,26 +2565,6 @@ sub Decode($) {
 
 #----------------------------------------------------------------------
 # External routines (exported to scripts)
-
-sub MakeDir {
-    my ($path, %opts) = @_;
-
-    $path = FollowLinks($path) if $opts{FOLLOW_LINKS};
-    my $oldtype = CheckType($path, 'DIR', %opts);
-    if ($oldtype eq 'DIR') {
-	# Directory already exists, make sure options match then return.
-	CheckFile($path, %opts, RECURSE => 0) if (scalar(%opts));
-	return;
-    }
-    MarkChange("creating directory $path");
-
-    # Just print?
-    return unless ($update);
-
-    my $temp = TempName($path, %opts);
-    RealMakeDir($temp);
-    MoveTemp($temp, $path, %opts);
-}
 
 # Retrieve document from URL.
 
@@ -3098,9 +3105,7 @@ sub FileSync {
 		if $srctype ne 'FILE';
     } else {
 	# Make sure parent directories of $destpath exist
-
-	my $parent = dirname($destpath);
-	MakeDir($parent);
+	MakeParent($destpath);
     }
 
     if ($srctype eq 'LINK') {
