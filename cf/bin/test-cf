@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 86;
+use Test::More tests => 93;
 use English;
 use File::Temp;
 use File::stat;
@@ -91,6 +91,41 @@ file(-MODE=>755, $tmpfile);
 is(sprintf("%04o", stat($tmpfile)->mode & 07777), "0755", "file(), MODE");
 file(-m=>"g+s", $tmpfile);
 is(sprintf("%04o", stat($tmpfile)->mode & 07777), "2755", "file(), g+s");
+
+# directory()
+
+{
+    my $dest = "$tmpdir/dest";
+    my $dest2 = "$tmpdir/dest2";
+
+    Cf::RealRemoveTree($dest);
+    directory($dest);
+    ok(-d $dest, "directory()");
+
+    Cf::RealRemoveTree($dest);
+    Cf::RealRemoveTree($dest2);
+    makelink($dest2, $dest);
+    directory('-nofollow', '-changetype', $dest);
+    ok(-d $dest, "directory('-nofollow')");
+    ok(! -l $dest, "directory('-nofollow') - breaking link");
+
+    Cf::RealRemoveTree($dest);
+    Cf::RealRemoveTree($dest2);
+    makelink($dest2, $dest);
+    directory('-follow', $dest);
+    ok(-d $dest, "directory('-follow')");
+    ok(-l $dest, "directory('-follow') - follow link");
+
+    Cf::RealRemoveTree($dest);
+    Cf::RealRemoveTree($dest2);
+    makelink($dest2, $dest);
+    directory($dest);
+    ok(-d $dest, "directory() w link - default");
+    ok(-l $dest, "directory() - follow link");
+
+    Cf::RealRemoveTree($dest);
+    Cf::RealRemoveTree($dest2);
+}
 
 # fix()
 

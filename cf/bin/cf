@@ -224,6 +224,7 @@ my %parse_opt = (
     FOLLOW_LINKS => '',
     FOLLOWLINKS => "FOLLOW_LINKS",
     FOLLOW => "FOLLOW_LINKS",
+    NOFOLLOW => "!FOLLOW_LINKS",
 
     RECURSE => \&parse_int,
     R => "RECURSE",
@@ -3766,7 +3767,7 @@ sub toc {
 push(@EXPORT, '&toc');
 
 sub directory {
-    my ($optref, @paths) = get_options(\%parse_opt, @_);
+    my ($optref, @paths) = get_options(\%parse_opt, '-follow', @_);
     foreach my $path (@paths) {
 	MakeDir($path, %{$optref});
     }
