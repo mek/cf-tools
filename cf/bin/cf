@@ -1367,6 +1367,7 @@ string_op('getmount');
 
 sub IsMount($) {
     my ($path) = @_;
+    return 0 if ! -d $path;
     return (!-l $path && (getmount($path) ne getmount("$path/..")));
 }
 
