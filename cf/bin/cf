@@ -3662,6 +3662,17 @@ then
 fi
 EOF
 
+    # Clean up old sessions once a day.
+    my $cleanflag = "$vardir/session.cleanup";
+    if (!-f $cleanflag || -M $cleanflag >= 1) {
+	# Remove session files over 2 days old
+	Tidy("$vardir/session",
+		RECURSE=>1, MTIME=>2, BACKUP=>'NONE', RMDIR=>1);
+
+	# Update flag
+	RealWriteFile($cleanflag, "");
+    }
+
     return $session;
 }
 
