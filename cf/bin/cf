@@ -146,7 +146,8 @@ if ($is_win) {
     if (defined $ENV{CYGROOT}) {
 	$rootdir = $ENV{CYGROOT};
     } elsif (-f "$vardir/cygroot") {
-	$rootdir = ReadFile("$vardir/cygroot");
+	$rootdir = RawReadFile("$vardir/cygroot");
+	chomp($rootdir);
     } else {
 	$rootdir = ReadCommand('cygpath -w /');
 	$rootdir =~ s/\s*$//; # Trim trailing white space
