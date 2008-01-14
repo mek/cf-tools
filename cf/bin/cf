@@ -778,6 +778,44 @@ sub load_vars {
 push(@EXPORT, '&load_vars');
 
 
+# Make sure multi-service host.ini file has been split into per-service
+# host.ini files. 
+# !!! hack - would rather have cf natively ready the multi-service ones -
+# but this is kind of trick for the shell script modules.
+# Does depend on the fact that cf can update the base config file tree.
+sub SplitHostVars() {
+    my $basedir = GetBase();
+    my $host = get_host();
+    my $masterfile = "$basedir/PERHOST/$host.ini";
+    my $done_flag = "$masterfile.done";
+
+    # Nothing to do if no master.
+    return if ! -f $masterfile;
+
+    # Skip is done flag is newer than master.
+    return if ( -f "$masterfile.done" && -M $done_flag < -M $masterfile);
+
+    open(FILE, "<$masterfile") or die "can't open $masterfile: $!\n";
+    while (my $line = <FILE>) {
+	next if $line =~ /^\s*$/;   # Skip empty lines
+	next if $line =~ /^\s*#/;   # Skip comments
+	if ($line =~ /^\[(\w+)\]/) {
+	    # New module section - open new target file
+	    my $modname = $1;
+	    my $outdir = "$basedir/$modname/PERHOST/$host";
+	    mkpath($outdir);
+	    open(OUTFILE, ">$outdir/host.ini")
+		    or die "cant open $outdir/host.ini: $!\n";
+	    next;
+	}
+	print(OUTFILE $line);
+    }
+
+    # Touch the done-flag
+    open(FILE, ">$done_flag") or die "can't update $done_flag: $!\n";
+    close(FILE);
+}
+
 sub LoadPerlMod($) {
     my ($script) = @_;
     my $dir = AbsolutePath(dirname($script));
@@ -788,6 +826,7 @@ sub LoadPerlMod($) {
     my $module = new Cf::ModuleWrap($name, $package);
 
     my $global_defs = "";
+    Cf::SplitHostVars();
     my %vars = (LoadVars("$dir/site.ini"),
 	    LoadVars("$dir/PERHOST/$host/host.ini"));
     foreach my $key (keys(%vars)) {
@@ -3641,6 +3680,7 @@ sub GetSession() {
     my $changes = $change_count || 0;
     RealWriteFile($change_file, $changes);
 
+    SplitHostVars();
     # !!! this script needs to be thought out more carefully!
     # what exactly are it's duties:
     # *
