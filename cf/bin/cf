@@ -810,6 +810,7 @@ sub SplitHostVars() {
 	}
 	print(OUTFILE $line);
     }
+    close(OUTFILE);
 
     # Touch the done-flag
     open(FILE, ">$done_flag") or die "can't update $done_flag: $!\n";
