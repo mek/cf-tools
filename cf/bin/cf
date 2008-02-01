@@ -778,58 +778,71 @@ sub load_vars {
 push(@EXPORT, '&load_vars');
 
 
-# Make sure multi-service host.ini file has been split into per-service
+# Hash of hashes. Key is module name, each value is a reference to another
+# hash that maps variable names to values.
+my %host_modvars = ();
+my $host_modvars_loaded = 0;
+
+# Load host-specific settings for modules from host's ini file.
 # host.ini files. 
-# !!! hack - would rather have cf natively ready the multi-service ones -
-# but this is kind of trick for the shell script modules.
-# Does depend on the fact that cf can update the base config file tree.
-sub SplitHostVars() {
+sub LoadHostVars() {
+    return if $host_modvars_loaded;
+
     my $basedir = GetBase();
     my $host = get_host();
     my $masterfile = "$basedir/PERHOST/$host.ini";
-    my $done_flag = "$masterfile.done";
 
-    # Nothing to do if no master.
-    return if ! -f $masterfile;
+    if (-f $masterfile) {
+	# Reference to variable hash currently being loaded
+	my $var_href;
 
-    # Skip is done flag is newer than master.
-    return if ( -f "$masterfile.done" && -M $done_flag < -M $masterfile);
+	open(FILE, "<$masterfile") or die "can't open $masterfile: $!\n";
+	while (my $line = <FILE>) {
+	    next if $line =~ /^\s*$/;   # Skip empty lines
+	    next if $line =~ /^\s*#/;   # Skip comments
+	    if ($line =~ /^\[(\w+)\]/) {
+		# New module section - open new target file
+		my $modname = $1;
+		$var_href = {};
+		$host_modvars{$modname} = $var_href;
+		next;
+	    }
 
-    open(FILE, "<$masterfile") or die "can't open $masterfile: $!\n";
-    while (my $line = <FILE>) {
-	next if $line =~ /^\s*$/;   # Skip empty lines
-	next if $line =~ /^\s*#/;   # Skip comments
-	if ($line =~ /^\[(\w+)\]/) {
-	    # New module section - open new target file
-	    my $modname = $1;
-	    my $outdir = "$basedir/$modname/PERHOST/$host";
-	    mkpath($outdir);
-	    open(OUTFILE, ">$outdir/host.ini")
-		    or die "cant open $outdir/host.ini: $!\n";
-	    next;
+	    $line =~ s/[\cM\cJ]*$//;	# chomp() for any text format
+	    if (!defined $var_href) {
+		die "definition without section in $masterfile: $line\n";
+	    }
+	    my ($key, $val) = split('=', $line, 2);
+	    $var_href->{$key} = $val;
 	}
-	print(OUTFILE $line);
     }
-    close(OUTFILE);
+    $host_modvars_loaded = 1;
+}
 
-    # Touch the done-flag
-    open(FILE, ">$done_flag") or die "can't update $done_flag: $!\n";
-    close(FILE);
+# Get host specifc variable settings for specified module.
+sub GetHostVars($) {
+    my ($modname) = @_;
+    
+    LoadHostVars();
+
+    my $href = $host_modvars{$modname};
+    if (defined $href) {
+	return %{ $href};
+    } else {
+	return ();
+    }
 }
 
 sub LoadPerlMod($) {
     my ($script) = @_;
     my $dir = AbsolutePath(dirname($script));
     my $name = basename($dir);
-    my $host = Cf::get_host();
 
     my $package = "Cf::Module::$name";
     my $module = new Cf::ModuleWrap($name, $package);
 
     my $global_defs = "";
-    Cf::SplitHostVars();
-    my %vars = (LoadVars("$dir/site.ini"),
-	    LoadVars("$dir/PERHOST/$host/host.ini"));
+    my %vars = (LoadVars("$dir/site.ini"), GetHostVars($name));
     foreach my $key (keys(%vars)) {
 	die "bad variable name in module $name: $key\n" unless $key =~ /^\w+$/;
 	if ($key =~ /^svc_/) {
@@ -3681,7 +3694,6 @@ sub GetSession() {
     my $changes = $change_count || 0;
     RealWriteFile($change_file, $changes);
 
-    SplitHostVars();
     # !!! this script needs to be thought out more carefully!
     # what exactly are it's duties:
     # *
@@ -3849,12 +3861,29 @@ sub writefile {
 }
 push(@EXPORT, '&writefile');
 
-sub initshell {
-    get_options({}, @_);
-    return GetSession()."/init.sh";
+sub initshellmodule {
+    my ($optref, $script_path) = get_options({}, @_);
+
+    my $dir = dirname(AbsolutePath($script_path));
+    my $modname = basename($dir);
+    my $session = GetSession();
+    my $host = get_host();
+    my %vars = 
+    my %vars = (LoadVars("$dir/site.ini"), GetHostVars($modname));
+
+    my $script = <<EOF;
+CF_UNAME="$uname"; export CF_UNAME ;
+CF_SESSION="$session"; export CF_SESSION ;
+cf_svcdir="$dir" ;
+cf_host='$host' ;
+EOF
+    foreach my $key (keys(%vars)) {
+	$script .= "$key='$vars{$key}';\n";
+    }
+    return $script;
 }
-push(@EXPORT, '&initshell');
-string_op('initshell');
+push(@EXPORT, '&initshellmodule');
+string_op('initshellmodule');
 
 sub error {
     my ($optref, @args) = get_options({}, @_);
@@ -4224,7 +4253,6 @@ sub usage(;$$) {
 # Command names that can only be used on the command line (because the name
 # is illegal/reserved in perl)
 my %cmd_alias = (
-    'init-shell' => 'initshell',
     'write' => 'writefile',
     'link' => 'makelink',
     'require' => 'requiremodule',
@@ -4311,9 +4339,10 @@ cf [I<options>] I<cf-command> [I<comand-options>] [I<arg> ..]
    geturl url [dest]		Get contents of specified URL. If dest is
    				specified then save contents in that file,
 				otherwise return contents of URL.
-   initshell			Returns shell command to initialize current
-   				process as a cf module. Should be sourced (.)
-				by shell
+   initshellmodule path		Returns shell commands to initialize current
+   				scripts as a cf module - should be executed
+				by the script:
+				    eval `cf initshellmodule $0`
    
    link src dest		Link dest to src
    loadregistry src		Load (and apply) registry settings from
