@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 93;
+use Test::More tests => 96;
 use English;
 use File::Temp;
 use File::stat;
@@ -191,6 +191,24 @@ Cf::RealRemoveTree("$tmpdir/sub");
     `echo hi >$src`;
     copy(-mode => 755, $src, $dest);
     is(sprintf("%04o", stat($dest)->mode & 07777), "0755", "copy(), MODE");
+
+    chmod(0644, $src) or die $!;
+    chmod(0644, $dest) or die $!;
+    copy(-mode => "g=rwx", $src, $dest);
+    is(sprintf("%04o", stat($dest)->mode & 07777), "0674", "copy(), rel MODE, contents match");
+
+    `echo ho >$dest`;
+    chmod(0644, $src) or die $!;
+    chmod(0755, $dest) or die $!;
+    copy(-mode => "g+w", $src, $dest);
+    is(sprintf("%04o", stat($dest)->mode & 07777), "0775", "copy(), rel MODE");
+
+    `echo ho >$dest`;
+    chmod(0644, $src) or die $!;
+    chmod(0755, $dest) or die $!;
+    copy(-mode => "+", $src, $dest);
+    is(sprintf("%04o", stat($dest)->mode & 07777), "0755",
+	    "copy(), rel MODE=+");
 
     unlink($src, $dest);
     `echo hi >$src`;

@@ -1712,7 +1712,7 @@ sub MoveTemp($$%) {
     # (Silently) set attributes of temp file.
     my $inform = $flags{INFORM};
     $flags{INFORM} = 0;
-    CheckFile($tmp, %opts, RECURSE=>0);
+    CheckFile($tmp, %opts, RECURSE=>0, TARGETPATH=>$target);
     $flags{INFORM} = $inform;
 
     my $umount_tries = 0;
@@ -2112,6 +2112,7 @@ sub CheckFile($%) {
 	return;
     }
     my $fi = GetFileInfo($path);
+    my $target = defined $opts{TARGETPATH} ? $opts{TARGETPATH} : $path;
 
     if ($fi->type eq 'LINK') {
 	# Nothing to do if not traversing links (we don't check perms on
@@ -2213,7 +2214,9 @@ sub CheckFile($%) {
 	    $File::chmod::DEBUG = 0;
 	    $File::chmod::UMASK = 0;
 
-	    ($mode) = File::chmod::getchmod($mode, $path);
+	    Debug("applying $mode to $target (",
+		    sprintf("%04o", GetFileInfo($target)->perm), ")");
+	    ($mode) = File::chmod::getchmod($mode, $target);
 	}
 	my $mode_str = sprintf("%04o", $mode);
 	Debug("checking $path mode is $mode_str");
