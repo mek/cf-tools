@@ -2112,7 +2112,14 @@ sub CheckFile($%) {
 	return;
     }
     my $fi = GetFileInfo($path);
-    my $target = defined $opts{TARGETPATH} ? $opts{TARGETPATH} : $path;
+
+    # Define target location - to be used for relative perm specification.
+    # If no target is specified or the target does not exist use the temp
+    # file for relative perm calculation instead.
+    my $target = $opts{TARGETPATH};
+    if ( !defined $opts{TARGETPATH} || !-e $opts{TARGETPATH} ) {
+	$target = $path;
+    }
 
     if ($fi->type eq 'LINK') {
 	# Nothing to do if not traversing links (we don't check perms on
