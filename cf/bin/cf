@@ -1845,14 +1845,26 @@ sub MD5 ($) {
 ## Checksum cache
 ## track file checksums and avoid recomputing if the file modtime is unchanged.
 
-# Lookup checksum (and modtime) from checksum cache
-
 my %cksums = ();
 my $cksum_deletes = 0;	# How many times have we deleted corrupt tied=db ?
+my $cksum_lock;		# Cf lock on the checksum table.
+
+# Open checksum db and tie to %cksums.
+sub TieCksum() {
+    if (!defined $cksum_lock) {
+	# Acquire high-level lock - this allows other cf sessions to kill us
+	# if we hang too long (without it the flock() that TieFile does will
+	# block indefinitely)
+	$cksum_lock = new Cf::Lock("_checksum");
+    }
+    TieFile(%cksums, "$vardir/cksum");
+}
+
+# Lookup checksum (and modtime) from checksum cache
 
 sub GetCksum($) {
     my ($path) = @_;
-    TieFile(%cksums, "$vardir/cksum");
+    TieCksum();
     return split(' ', $cksums{$path}, 2);
     # or use unpack() / pack ?
 }
@@ -1861,13 +1873,13 @@ sub GetCksum($) {
 
 sub SetCksum($$$) {
     my ($path, $sum, $mtime) = @_;
-    TieFile(%cksums, "$vardir/cksum");
+    TieCksum();
     if (defined $sum) {
 	Debug("about to set cksum of $path to '$sum $mtime'");
 	my $status = ($cksums{$path} = "$sum $mtime");
 	if (!defined $status) {
-	    # Annoying - sometimes updates to database files and there is no
-	    # rhyme or reason (seeing this problem with berkeley db) -
+	    # Annoying - sometimes updates to database files fail and there
+	    # is no rhyme or reason (seeing this problem with berkeley db) -
 	    # removing the cache seems to fix it. Try removing the cksum
 	    # file but only try once per run:
 
@@ -1902,7 +1914,7 @@ sub SetCksum($$$) {
 
 # Remove obsolete entries from the checksum cache.
 sub PurgeCksum() {
-    TieFile(%cksums, "$vardir/cksum");
+    TieCksum();
     while (my ($path, $info) = each(%cksums)) {
 	my ($sum, $mtime) = split(' ', $cksums{$path}, 2);
 	my $fi = GetFileInfo($path);
