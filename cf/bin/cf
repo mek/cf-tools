@@ -33,6 +33,9 @@
 # info commands to learn available base command, module, module commands,
 # and even command options.
 #
+# Should all commands follow-links for the initial target path (only
+# recursive follow is off by default)?
+#
 # Complete tracking changes in DRYRUN mode so that later file comparisons
 # are made correctly - particulary copy is not tracked.
 #
@@ -599,15 +602,15 @@ sub UnsysPath($) {
 #-------
 # Introspective help
 
-sub helpops {
+sub helpcommands {
     foreach my $cmd (sort(@EXPORT)) {
 	$cmd =~ s/^&//;
 	print "  $cmd\n";
     }
 }
-push(@EXPORT, '&helpops');
+push(@EXPORT, '&helpcommands');
 
-sub helpmodops {
+sub helpmodcommands {
     my ($o, $modname) = get_options({}, @_);
     my %briefs = GetModule($modname)->GetOps();
 
@@ -615,7 +618,7 @@ sub helpmodops {
 	print "$op - $briefs{$op}\n";
     }
 }
-push(@EXPORT, '&helpmodops');
+push(@EXPORT, '&helpmodcommands');
 
 sub helpmodules {
     my %modbriefs = ();
@@ -1820,6 +1823,10 @@ sub ReadDir {
 
     return @children;
 }
+sub read_dir {
+    ReadDir(@_);
+}
+push(@EXPORT, '&read_dir');
 
 sub ReadLink ($) {
     my ($path) = @_;
@@ -2476,6 +2483,8 @@ sub SetFake($$) {
 
 sub WriteFile {
     my ($destpath, $content, %opts) = @_;
+
+    $destpath = FollowLinks($destpath) if $opts{FOLLOW_LINKS};
 
     # If contents already matches just check file attributes.
     # Need to fudge the quick size check by 1 as read/write may add/remove a
@@ -4266,8 +4275,13 @@ sub usage(;$$) {
     $exitcode = 1 unless defined $exitcode;
 
     print STDERR $message, "\n" if defined $message;
-    print STDERR "cf [options] command [command-options] [arg ..]\n";
-    print STDERR "  run 'cf man' for detailed help\n";
+    print STDERR <<EOF;
+cf [options] [module:]command [command-options] [arg ..]
+  run 'cf helpcommands' for list of available commands
+  run 'cf helpmodules' for list of available modules
+  run 'cf helpmodcommands MODULE' for list of commands for a module
+  run 'cf man' for detailed help
+EOF
     exit($exitcode);
 }
 
