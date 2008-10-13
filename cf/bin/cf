@@ -1867,6 +1867,11 @@ sub TieCksum() {
     TieFile(%cksums, "$vardir/cksum");
 }
 
+sub UntieCksum() {
+    UntieFile(%cksums);
+    $cksum_lock = undef;
+}
+
 # Lookup checksum (and modtime) from checksum cache
 
 sub GetCksum($) {
@@ -1899,12 +1904,12 @@ sub SetCksum($$$) {
 
 	    # Delete the database files
 	    Warn("removing corrupt cksum files");
-	    UntieFile(%cksums);
+	    UntieCksum();
 	    foreach my $file (glob("$vardir/cksum*"))  {
 		unlink($file) or die "can't remove $file: $!\n";
 	    }
 	    $cksum_deletes += 1;
-	    TieFile(%cksums, "$vardir/cksum");
+	    TieCksum();
 
 	    # Try the update again
 	    $status = ($cksums{$path} = "$sum $mtime");
@@ -3779,7 +3784,7 @@ sub PreSpawn() {
     }
 
     # Flush file checksums.
-    UntieFile(%cksums);
+    UntieCksum();
 
     # Flush change count.
     # Only need to do this if we have an external change file and more than
