@@ -903,10 +903,17 @@ sub all {
 
     open(FILE, "<$svfile") or die $!;
     my @svcs = <FILE>;
+    my @failed = ();
     close(FILE) or die $!;
     foreach my $svc (@svcs) {
 	$svc =~ s/[\cM\cJ]*$//;		# chomp() for any text format
-	GetModule($svc)->require();
+	eval { GetModule($svc)->require(); };
+	if ($@) {
+	    push(@failed, $svc);
+	}
+    }
+    if (@failed) {
+	die("failed to configure: ", join(" ", @failed), "\n");
     }
 }
 
@@ -3933,6 +3940,12 @@ sub warning {
 }
 push(@EXPORT, '&warning');
 
+sub inform {
+    my ($optref, @args) = get_options({}, @_);
+    Info(@args)
+}
+push(@EXPORT, '&inform');
+
 sub debug {
     my ($optref, @args) = get_options({}, @_);
     Debug(@args)
@@ -4140,6 +4153,14 @@ package Cf::Module;
 
 sub require() {
     my $self = shift;
+    my $flagfile = $self->get_config_flag();
+    if (-f $flagfile) {
+	my $success = ReadFile($flagfile);
+	return if $success;
+
+	my $name = $self->{name};
+	die "can't configure $name - failed earlier in this run\n";
+    }
     unless (-f $self->get_config_flag()) {
 	my $lock = $self->lockop("require");
 	$self->configure();
@@ -4159,15 +4180,15 @@ sub get_config_flag() {
     return "$session/configured/".$self->{name};
 }
 
-sub set_configured() {
-    my $self = shift;
-    Cf::RealWriteFile($self->get_config_flag(), "");
+sub set_configured($$) {
+    my ($self, $status) = @_;
+    Cf::RealWriteFile($self->get_config_flag(), $status);
 }
 
 sub configure() {
     my $self = shift;
-    $self->call("configure");
-    $self->set_configured();
+    eval { $self->call("configure"); };
+    $self->set_configured(!$@);
 }
 
 sub write_temp($$$) {
