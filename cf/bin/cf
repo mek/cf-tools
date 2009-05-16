@@ -850,12 +850,12 @@ sub LoadPerlMod($) {
 	die "bad variable name in module $name: $key\n" unless $key =~ /^\w+$/;
 	if ($key =~ /^svc_/) {
 	    eval { Cf::GetModule($vars{$key}) };
-	    if ($@) {
+	    if (my $err = $@) {
 		# Skip definition if module not found - it might be a
 		# compile-only module.
-		next if $@ =~ /^unknown module:/;
+		next if $err =~ /^unknown module:/;
 
-		die $@;
+		die $err;
 	    }
 	    $global_defs .= sprintf('my $%s = Cf::GetModule(\'%s\');',
 		    $key, $vars{$key});
@@ -871,7 +871,9 @@ sub LoadPerlMod($) {
 	. 'my $this_vars = \%vars;'
 	. $global_defs
 	. Cf::ReadFile($script);
-    die "while loading $script: $@" if $@;
+    if (my $err = $@) {
+	die "while loading $script: $@";
+    }
     return $module;
 }
 
@@ -908,8 +910,9 @@ sub all {
     foreach my $svc (@svcs) {
 	$svc =~ s/[\cM\cJ]*$//;		# chomp() for any text format
 	eval { GetModule($svc)->require(); };
-	if ($@) {
+	if (my $err = $@) {
 	    push(@failed, $svc);
+	    Error("configure of $svc failed: $err");
 	}
     }
     if (@failed) {
@@ -1162,7 +1165,7 @@ my $logging = '0';
 my $logtype = 'none';
 my $logfh;
 
-# logfile used then logtype is "file"
+# logfile used when logtype is "file"
 my $logfile = "$vardir/log";
 
 # Define whether we are logging to the system log (and how).
@@ -1238,8 +1241,11 @@ sub Log ($$$@)
 		    syslog($priority, '%s', $submessage);
 		}
 	    };
-	    return unless $@;
-	    print(STDERR ":error:syslog failed:$@\n");
+	    if (my $err = $@) {
+		print(STDERR ":error:syslog failed:$err\n");
+	    } else {
+		return;
+	    }
 	} else {
 	    # Write to our own log.
 	    if (!defined $logfh) {
@@ -1684,10 +1690,13 @@ sub Backup($%) {
 
 	$pathmap{$path} = $bpath;
     } };
-    UntieFile(%pathmap);
+    {
+	my $err =$@;
+	UntieFile(%pathmap);
 
-    # Throw error if backup failed
-    die $@ if $@;
+	# Throw error if backup failed
+	die $err if $err;
+    }
 }
 
 # Remove obsolete entries from the backup index (files purged from the backup
@@ -1969,7 +1978,7 @@ sub Cksum ($) {
 	eval {
 	    require String::CRC::Cksum;
 	};
-	if ($@) {
+	if (my $err = $@) {
 	    # Can't load perl module - use external command instead.
 	    Debug("String::CRC::Cksum is not available");
 	    $cksum_ref = \&CksumExt;
@@ -2391,9 +2400,9 @@ sub CopyFile {
 		or die "can't copy from $srcpath: $!\n";
 	}
     };
-    if ($@) {
+    if (my $err = $@) {
 	unlink($temp);
-	die $@;
+	die $err;
     }
 
     unless ($newtime) {
@@ -3021,7 +3030,9 @@ sub Tidy ($%) {
 	if ($ftype ne 'DIR' || $opts{RMDIR}) {
 	    # File is not a directory, or directory removal is allowed.
 	    eval { RemoveFile($path, %opts); };
-	    Fail($opts{ONFAIL}, $@) if ($@);
+	    if (my $err = $@) {
+		Fail($opts{ONFAIL}, $err);
+	    }
 	    return;
 	}
     }
@@ -3139,7 +3150,9 @@ sub RemoteSync($$%) {
     if ($srcpath =~ /^scf:/) {
     } else {
 	eval { LoadTreeTOC($srcpath); };
-	LoadDirTOC(dirname($srcpath)) if ($@);
+	if (my $err = $@) {
+	    LoadDirTOC(dirname($srcpath));
+	}
     }
 
     FileSync($srcpath, $destpath, %opts, REMOTE_SRC=>1);
@@ -3314,26 +3327,28 @@ sub run {
 
 	    alarm 0;
 	};
-	if ($@ eq "timeout\n") {
-	    Info("timeout: $cmd");
-	    kill('INT', $pid);
-	    # Now close - but may hang if process is wedged to use timeout
-	    # again.
-	    eval {
-		local $SIG{ALRM} = sub { die "timeout\n"; };
-		alarm $timeout if ($timeout > 0);
+	if (my $err = $@) {
+	    if ($err eq "timeout\n") {
+		Info("timeout: $cmd");
+		kill('INT', $pid);
+		# Now close - but may hang if process is wedged to use timeout
+		# again.
+		eval {
+		    local $SIG{ALRM} = sub { die "timeout\n"; };
+		    alarm $timeout if ($timeout > 0);
 
+		    close(PIPE);
+
+		    alarm 0;
+		};
+		VerifiedKill($pid)
+			or Warn("can't kill timed-out command: $cmd");
+		die "command timed out ($cmd)\n";
+	    } else {
 		close(PIPE);
-
-		alarm 0;
-	    };
-	    VerifiedKill($pid) or Warn("can't kill timed out command: $cmd");
-	    die "command timed out ($cmd)\n";
-	} elsif ($@) {
-	    close(PIPE);
-	    die "command failed ($cmd): $@\n";
-	};
-
+		die "command failed ($cmd): $err\n";
+	    }
+	}
     } else {
 	# This is the child.
 
@@ -3393,8 +3408,8 @@ sub syncserver {
 	}
 
 	my ($result, $blob) = eval "Sync_$op(\@args);";
-	if ($@) {
-	    print "500 ".Encode($@)."\n";
+	if (my $err = $@) {
+	    print "500 ".Encode($err)."\n";
 	} elsif (defined $blob) {
 	    my $len = length($blob);
 	    print "201 ".Encode($result)." $len\n";
@@ -4086,10 +4101,11 @@ sub new {
 	}
 	$lockmap{$name} = "$PID $now";
     };
+    my $err = $@;
     Cf::UntieFile(%lockmap);
 
     # Throw error if lock failed
-    die $@ if $@;
+    die $err if $err;
 
     return $self;
 }
@@ -4114,10 +4130,11 @@ sub DESTROY($) {
 	    delete $lockmap{$name};
 	}
     };
+    my $err = $@;
     Cf::UntieFile(%lockmap);
 
     # Throw error if unlock failed
-    die $@ if $@;
+    die $err if $err;
 }
 
 #----------------------------------------------------------------------
@@ -4155,16 +4172,14 @@ sub require() {
     my $self = shift;
     my $flagfile = $self->get_config_flag();
     if (-f $flagfile) {
-	my $success = ReadFile($flagfile);
+	my $success = Cf::ReadFile($flagfile);
 	return if $success;
 
 	my $name = $self->{name};
 	die "can't configure $name - failed earlier in this run\n";
     }
-    unless (-f $self->get_config_flag()) {
-	my $lock = $self->lockop("require");
-	$self->configure();
-    }
+    my $lock = $self->lockop("require");
+    $self->configure();
 }
 
 sub lockop($$) {
@@ -4177,18 +4192,23 @@ sub lockop($$) {
 sub get_config_flag() {
     my $self = shift;
     my $session = Cf::GetSession();
-    return "$session/configured/".$self->{name};
+    my $name = $self->{name};
+    return "$session/configured/$name";
 }
 
 sub set_configured($$) {
-    my ($self, $status) = @_;
+    my $self = shift;
+    my ($status) = @_;
     Cf::RealWriteFile($self->get_config_flag(), $status);
 }
 
 sub configure() {
     my $self = shift;
+    my $name = $self->{name};
     eval { $self->call("configure"); };
-    $self->set_configured(!$@);
+    my $err = $@;
+    $self->set_configured($err?0:1);
+    die $err if ($err);
 }
 
 sub write_temp($$$) {
@@ -4207,7 +4227,13 @@ sub AUTOLOAD {
     my $self = shift();
     my $method = $AUTOLOAD;
     $method =~ s/.*://;   # strip fully-qualified portion
-    $self->call($method, @_);
+    eval { $self->call($method, @_); };
+    if (my $err = $@) {
+	# Report what we were trying to load since I have been burned
+	# placing a typo in this package which causes an inexplicable and
+	# infuriating failure which is very hard to debug.
+	die "failed to autoload $method: $@";
+    }
 }
 
 #----------------------------------------------------------------------
@@ -4235,7 +4261,7 @@ sub call {
     my $function = shift;
     Cf::PreSpawn();
     system($self->{script}, $function, @_) == 0
-	    or die $self->{name}.":$function failed\n";
+	    or die ($self->{name}).":$function failed\n";
 }
 
 }
@@ -4338,7 +4364,9 @@ sub main() {
     } elsif ($cmd =~ /^[a-z]*$/) {
 	# Built-in command
 	$rv = eval "Cf::$cmd(\@args)";
-	die "$@\n" if $@;
+	if (my $err = $@) {
+	    die "$err\n";
+	}
     } elsif ($cmd =~ /^(\w*):(.*)/) {
 	# Invoke another configuration module
 	my $module = $1;
