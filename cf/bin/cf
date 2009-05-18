@@ -107,10 +107,12 @@ BEGIN {
 my $is_win = ($^O eq 'MSWin32' || $^O eq 'cygwin');
 
 # Is this the root user (or equivalent).
-# Controls config settings - not award special privileges) so we dont have
-# to be too thorough.
+# Controls config settings, not special privileges, so we dont have
+# to be too thorough (important be cause the check under windows
+# is rather fuzzy)
 
-my $is_root = $is_win ? ($ENV{USERNAME} eq "Administrator") : ($UID == 0);
+my $is_root = ($UID == 0)
+	|| ($is_win && ($ENV{USERNAME} eq "Administrator" || $UID == 500));
 
 # Where to store our state files.
 
@@ -4226,13 +4228,16 @@ sub AUTOLOAD {
     my $self = shift();
     my $method = $AUTOLOAD;
     $method =~ s/.*://;   # strip fully-qualified portion
-    eval { $self->call($method, @_); };
+    my @results = eval { $self->call($method, @_); };
     if (my $err = $@) {
 	# Report what we were trying to load since I have been burned
 	# placing a typo in this package which causes an inexplicable and
 	# infuriating failure which is very hard to debug.
 	die "failed to autoload $method: $@";
     }
+
+    # Preserve scalar/list context of result
+    return (scalar(@results) == 1) ? $results[0] : @results;
 }
 
 #----------------------------------------------------------------------
