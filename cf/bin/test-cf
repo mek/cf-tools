@@ -46,21 +46,22 @@ ok($ENV{CF_FLAGS} !~ /INFORM/, "clearing INFORM flag");
 
 {
     my $tmp = "$tmpdir/a";
+    my $cflock = dirname($0)."/test-cflock";
 
     Cf::SetFlags('LOCK_EXPIRE=60');
     Cf::SetFlags('LOCK_WAIT=4');
 
-    my $rc = system("./test-cflock foo 5 &");
+    my $rc = system("$cflock foo 5 &");
     is($rc, 0, "Lock(), no conflict");
 
-    system("./test-cflock foo2 10 &");
-    my $out = `./test-cflock foo2 1 2>&1`;
+    system("$cflock foo2 10 &");
+    my $out = `$cflock foo2 1 2>&1`;
     like($out, qr{^lock foo2 held by}, "Lock(), conflict");
 
     Cf::SetFlags('LOCK_EXPIRE=1');
 
-    system("./test-cflock foo3 10 &");
-    my $rc = system("./test-cflock foo3 1");
+    system("$cflock foo3 10 &");
+    my $rc = system("$cflock foo3 1");
     is($rc, 0, "Lock(), expired lock");
 
     Cf::SetFlags('LOCK_EXPIRE=60');
