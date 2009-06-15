@@ -52,6 +52,7 @@ ok($ENV{CF_FLAGS} !~ /INFORM/, "clearing INFORM flag");
     Cf::SetFlags('LOCK_WAIT=4');
 
     my $rc = system("$cflock foo 5 &");
+    $rc = $rc >> 8;
     is($rc, 0, "Lock(), no conflict");
 
     system("$cflock foo2 10 &");
@@ -62,6 +63,7 @@ ok($ENV{CF_FLAGS} !~ /INFORM/, "clearing INFORM flag");
 
     system("$cflock foo3 10 &");
     my $rc = system("$cflock foo3 1");
+    $rc = $rc >> 8;
     is($rc, 0, "Lock(), expired lock");
 
     Cf::SetFlags('LOCK_EXPIRE=60');
