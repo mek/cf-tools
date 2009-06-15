@@ -124,18 +124,25 @@ my $cfbase = $ENV{CF_BASEDIR};
 
 # Modal flags
 my %flags = (
-    INFORM => 0,	# notify of any changes made?
-    DRYRUN => 0,	# don't actually make changes
-    DEBUG => 0,		# display debugging output
-    LOG => 0,		# log messages to system log
-    NEW_TIME => 0,	# update time when copying?
-    COPY_TYPE => 'mtime',	# method for comparing files
-    VERIFY => 'none',		# method for verifying files
-    BACKUP => 'original',	# when to backup
-    TEMPDIR => '',	# where to put temp files
+    INFORM => 0,		# Notify of any changes made?
+    DRYRUN => 0,		# If true, don't actually make changes
+    DEBUG => 0,			# Display debugging output?
+    LOG => 0,			# Log messages to system log
+    NEW_TIME => 0,		# Update time when copying?
+    COPY_TYPE => 'mtime',	# Method for comparing files
+    VERIFY => 'none',		# Method for verifying files
+    BACKUP => 'original',	# When to backup
+    TEMPDIR => '',		# Where to put temp files
+    DELETE_CORRUPT_DB => 0,	# Should we delete checksum database when it
+    				# gets corrupts (and then retry)
+    LOCK_EXPIRE => 60*60,	# Seconds before a lock holding process can
+    				# be killed (default is 1 hour).
+    LOCK_WAIT => 30,		# Seconds to wait before giving up on locks
+    				# (default is 30 seconds).
+
+    # For scf - never completed...
     SCF_SSH => 'ssh',	# ssh used for scf
     SCF_CF => 'cf',	# Path to cf on remote machines (scf)
-    DELETE_CORRUPT_DB => 0,	# Path to cf on remote machines (scf)
 );
 
 # Boolean: actually perform updates (as opposed to going
@@ -4080,8 +4087,8 @@ sub new {
     my $self = { name => $name };
     bless($self, $class);
 
-    my $now = time();
-    my $duration = 60*60;	# default to holding locks for an hour.
+    my $start = time();
+    my $now = $start;
     my $vardir = Cf::GetVarDir();
 
     Cf::RealMakeDir($vardir);
@@ -4089,17 +4096,29 @@ sub new {
     Cf::TieFile(%lockmap, "$vardir/locks");
     eval {
 	if (defined $lockmap{$name}) {
+	    # Prior lock recorded - check if valid.
 	    my ($lockpid, $locktime) = split(' ', $lockmap{$name});
-	    if ( kill(0, $lockpid) ) {
-		if ($locktime - $now > $duration) {
+	    while ( kill(0, $lockpid) ) {
+		# Prior locking process still exists.
+		$now = time();
+		if ($now - $locktime > $flags{LOCK_EXPIRE}) {
+		    # Lock has timed out - break it (killing prior process)
 		    Cf::Warn("breaking old lock $name from $lockpid");
 		    Cf::VerifiedKill($lockpid)
 			or die "can't kill proc $lockpid to break lock $name\n";
 
 		} else {
-		    die "lock $name held by process $lockpid\n";
+		    # Lock has not expired
+		    if ($now - $start >= $flags{LOCK_WAIT}) {
+			# We have waited too long - give up.
+			die "lock $name held by process $lockpid\n";
+		    } else {
+			# Keep waiting for prior process to finish
+			sleep(2);
+		    }
 		}
 	    }
+	    # We get to replace the lock
 	}
 	$lockmap{$name} = "$PID $now";
     };

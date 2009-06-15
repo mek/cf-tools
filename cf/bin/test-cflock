@@ -1,0 +1,36 @@
+#!/usr/bin/env perl
+# $Id:$
+
+# Usage: test-cflock lockname seconds
+#
+# Helper script for testing cf locking. It will acquire a lock and then
+# sleep for a specified amount of time.
+
+use strict;
+BEGIN {
+    # Add script's parent directory to module search path
+    use FindBin;
+    my $scriptdir = $FindBin::Bin;
+    push(@INC, "$scriptdir/lib/perl");
+}
+use File::Basename;
+
+# Load Cf package - without running main command line processing.
+{
+    $main::Testing = 1;
+    my $cf = dirname($0)."/cf";
+    my $do_code = do $cf;
+    die "can't parse cf: $@" if $@;
+    die "can't do cf: $!" unless defined $do_code;
+}
+import Cf;
+
+if (@ARGV != 2) {
+    print "Usage: $0 lockname sleep-seconds\n";
+    exit(1);
+}
+my ($lockname, $sleepsecs) = @ARGV;
+
+my $lock = new Cf::Lock($lockname);
+sleep($sleepsecs);
+exit(0);
