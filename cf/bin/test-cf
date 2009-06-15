@@ -56,12 +56,14 @@ ok($ENV{CF_FLAGS} !~ /INFORM/, "clearing INFORM flag");
     is($rc, 0, "Lock(), no conflict");
 
     system("$cflock foo2 10 &");
+    sleep(1);
     my $out = `$cflock foo2 1 2>&1`;
     like($out, qr{^lock foo2 held by}, "Lock(), conflict");
 
     Cf::SetFlags('LOCK_EXPIRE=1');
 
     system("$cflock foo3 10 &");
+    sleep(1);
     my $rc = system("$cflock foo3 1");
     $rc = $rc >> 8;
     is($rc, 0, "Lock(), expired lock");
