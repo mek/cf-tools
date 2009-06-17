@@ -25,12 +25,16 @@ use File::Basename;
 }
 import Cf;
 
-if (@ARGV != 2) {
-    print "Usage: $0 lockname sleep-seconds\n";
+if (@ARGV < 2) {
+    print "Usage: $0 lockname [sleep-seconds|cmd [arg ..]]\n";
     exit(1);
 }
-my ($lockname, $sleepsecs) = @ARGV;
+my $lockname = shift(@ARGV);
 
 my $lock = new Cf::Lock($lockname);
-sleep($sleepsecs);
+if ($ARGV[0] =~ /^\d+$/) {
+    sleep($ARGV[0]);
+} else {
+    run(@ARGV);
+}
 exit(0);

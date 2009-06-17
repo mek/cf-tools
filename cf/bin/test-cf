@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 100;
+use Test::More tests => 101;
 use English;
 use File::Temp;
 use File::stat;
@@ -51,22 +51,20 @@ ok($ENV{CF_FLAGS} !~ /INFORM/, "clearing INFORM flag");
     Cf::SetFlags('LOCK_EXPIRE=60');
     Cf::SetFlags('LOCK_WAIT=4');
 
-    my $rc = system("$cflock foo 5 &");
+    my $rc = system("$cflock foo 1");
     $rc = $rc >> 8;
     is($rc, 0, "Lock(), no conflict");
 
-    system("$cflock foo2 10 &");
-    sleep(1);
-    my $out = `$cflock foo2 1 2>&1`;
-    like($out, qr{^lock foo2 held by}, "Lock(), conflict");
+    my $out = `$cflock foo2 $cflock foo2 1 2>&1`;
+    $rc = $? >> 8;
+    ok($rc != 0, "Lock(), conflict - exit code");
+    like($out, qr{lock foo2 held by}, "Lock(), conflict - message");
+
 
     Cf::SetFlags('LOCK_EXPIRE=1');
 
-    system("$cflock foo3 10 &");
-    sleep(1);
-    my $rc = system("$cflock foo3 1");
-    $rc = $rc >> 8;
-    is($rc, 0, "Lock(), expired lock");
+    $out = `$cflock foo3 $cflock foo3 1 2>&1`;
+    like($out, qr{breaking old lock foo3}, "Lock(), expired lock - message");
 
     Cf::SetFlags('LOCK_EXPIRE=60');
 }
