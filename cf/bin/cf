@@ -3709,8 +3709,8 @@ sub getos {
 		}
 		($cpu) = split(" ", ReadCommand("uname -m"));
 
-		my ($majorversion) = split(".", $version);
-		my ($cpuclass) = split(" ", ReadCommand("uname -i"));
+		my ($majorversion) = split(/\./, $version);
+		my ($cpuclass) = ReadCommand("uname -i");
 		$platform = "$osname-$majorversion-$cpuclass";
 	    } elsif ( $class eq 'aix' ) {
 		$osname = 'aix';
