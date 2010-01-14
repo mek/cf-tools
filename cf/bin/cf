@@ -3673,12 +3673,14 @@ sub getos {
 	my $osname = 'unknown';
 	my $version = 'unknown';
 	my $cpu = 'unknown';
+	my $platform;
 	if ($is_win) {
 	    require Win32;
 	    $osname = (Win32::IsWinNT()) ? 'winnt' : 'win32';
 	    my ($junk, $major, $minor, $build, $id) = Win32::GetOSVersion();
 	    $version = "${major}.${minor}";
 	    $cpu = $ENV{'PROCESSOR_ARCHITECTURE'};
+	    $platform = "win-$cpu";
 	} else {
 	    if ( $class eq 'linux' ) {
 		my $rhat_file = '/etc/redhat-release';
@@ -3706,6 +3708,10 @@ sub getos {
 		    $version = ReadFile($deb_file);
 		}
 		($cpu) = split(" ", ReadCommand("uname -m"));
+
+		my ($majorversion) = split(".", $version);
+		my ($cpuclass) = split(" ", ReadCommand("uname -i"));
+		$platform = "$osname-$majorversion-$cpuclass";
 	    } elsif ( $class eq 'aix' ) {
 		$osname = 'aix';
 		($version, $cpu) = split(" ", ReadCommand("uname -vm"));
@@ -3720,6 +3726,9 @@ sub getos {
 	$os{cpu} = $cpu;
 	$os{os} = "$osname-$version";
 	$os{all} = "$osname-$version-$cpu";
+
+	# ID for binary software type
+	$os{platform} = $platform || $os{all};
 
 	$ENV{CF_OS} = join(':', %os);
     }
