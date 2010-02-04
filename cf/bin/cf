@@ -266,7 +266,7 @@ my %parse_opt = (
     BACKUPDIR => \&parse_string,
 
     COPY_TYPE => sub { parse_enum(uc($_[0]),
-	'MTIME', 'CKSUM', 'MD5', 'BINARY'
+	'MTIME', 'CKSUM', 'MD5', 'BINARY', 'HARDLINK', 'SOFTLINK',
     ) },
     COPYTYPE => 'COPY_TYPE',
 
@@ -2317,6 +2317,24 @@ sub CopyFile {
     my $newtime = $opts{NEW_TIME};
     $newtime = $flags{NEW_TIME} unless defined $newtime;
 
+    if ($compare eq "HARDLINK" || $compare eq "SOFTLINK") {
+	foreach my $optname ("OWNER", "GROUP", "MODE",
+		    "REMOTE_SRC", "REMOTE_DEST", ) {
+	    if (defined $opts{$optname}) {
+		die "can't use option $optname with copy-type $compare\n";
+	    }
+	}
+    }
+
+    if ($compare eq "SOFTLINK") {
+	MakeLink($srcpath, $destpath, %opts);
+	return;
+    }
+    if ($compare eq "HARDLINK") {
+	HardLink($srcpath, $destpath, %opts);
+	return;
+    }
+
     die "can't use binary comparison for remote copy\n"
 	    if ($opts{REMOTE_SRC} || $opts{REMOTE_DEST})
 		&& ($compare eq 'BINARY' || $verify eq 'BINARY');
@@ -2541,6 +2559,8 @@ sub WriteFile {
     MoveTemp($temp, $destpath, %opts);
 }
 
+# Create a symbolic link
+
 sub MakeLink {
     my ($src, $dest, %opts) = @_;
 
@@ -2558,6 +2578,25 @@ sub MakeLink {
     MakeParent($dest);
     my $temp = TempName($dest, %opts);
     symlink($src, $temp) or die $!;
+    MoveTemp($temp, $dest, %opts);
+}
+
+# Create a hard link
+
+sub HardLink {
+    my ($src, $dest, %opts) = @_;
+
+    my $desttype = CheckType($dest, 'FILE', %opts);
+    Debug("$dest is $desttype");
+
+    MarkChange("hard linking $dest -> $src");
+
+    # Just print?
+    return unless ($update);
+
+    MakeParent($dest);
+    my $temp = TempName($dest, %opts);
+    link($src, $temp) or die $!;
     MoveTemp($temp, $dest, %opts);
 }
 
@@ -4553,7 +4592,7 @@ cf [I<options>] I<cf-command> [I<comand-options>] [I<arg> ..]
     --backup all|original|last|none
     --backupdir path
 
-    --copytype mtime|cksum|md5|binary
+    --copytype mtime|cksum|md5|binary|softlink|hardlink
 
     --verify none|cksum|md5|binary
 
