@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 101;
+use Test::More tests => 105;
 use English;
 use File::Temp;
 use File::stat;
@@ -280,6 +280,18 @@ Cf::RealRemoveTree("$tmpdir/sub");
     ok(-d $dest, "copy(), recurse");
     ok(! -l $dest, "copy(), recurse and replace symlink");
     Cf::RealRemoveTree($dest);
+
+    copy(-copytype => 'hardlink', '-changetype', $src, $dest);
+    is(stat($src)->ino, stat($dest)->ino, "copy, -copytype hardlink");
+    $changes = Cf::ChangeCount();
+    copy(-copytype => 'hardlink', '-changetype', $src, $dest);
+    is($changes, Cf::ChangeCount(), "copy(), -copytype hardlink convergence");
+    copy(-copytype => 'softlink', '-changetype', $src, $dest);
+    is(readlink($dest), $src, "copy(), -copytype softlink");
+    $changes = Cf::ChangeCount();
+    copy(-copytype => 'softlink', '-changetype', $src, $dest);
+    is($changes, Cf::ChangeCount(), "copy(), -copytype softlink convergence");
+    unlink($dest);
 
     unlink($src, $src2);
     Cf::RealRemoveTree($src3);

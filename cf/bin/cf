@@ -2030,6 +2030,14 @@ sub CksumExt($) {
     return $sum;
 }
 
+# Store file info in cache - for dryrun results
+# !!! need to store this in session file so it works across processes?
+
+sub SetFileInfo($$) {
+    my ($path, $info) = @_;
+    $file_info{$path} = $info;
+}
+
 sub GetFileInfo($) {
     my ($path) = @_;
 
@@ -2327,7 +2335,8 @@ sub CopyFile {
     }
 
     if ($compare eq "SOFTLINK") {
-	MakeLink($srcpath, $destpath, %opts);
+	# !!! should we offer option to create relative path link?
+	MakeLink(AbsolutePath($srcpath), $destpath, %opts);
 	return;
     }
     if ($compare eq "HARDLINK") {
@@ -2343,6 +2352,13 @@ sub CopyFile {
 
     my $si = GetFileInfo($srcpath);
     my $di = GetFileInfo($destpath);
+
+    if (defined $di->dev
+		&& $si->dev == $di->dev
+		&& $si->ino == $di->ino) {
+	debug("no copy, files are hard linked: $srcpath and $destpath");
+	return;
+    }
 
     if (!defined $opts{MODE}) {
 	# Mode not explicity set for copy - use source permissions but apply
@@ -2589,11 +2605,36 @@ sub HardLink {
     my $desttype = CheckType($dest, 'FILE', %opts);
     Debug("$dest is $desttype");
 
+    my $srcinfo = GetFileInfo($src);
+    my $destinfo = GetFileInfo($dest);
+
+    # See if its possible to hard link these locations
+    # If dest does not exist, find first parent directory that exists.
+    # Verify that this destination location and the source share the same
+    # device.
+    my $path = $dest;
+    my $info = $destinfo;
+    while ($info->type eq "NONE") {
+	$path = dirname($path);
+	$info = GetFileInfo($path);
+    }
+    if ($srcinfo->dev != $info->dev) {
+	die "can't link $src and $dest - different devices\n";
+    }
+
+    # Check if already linked
+    return if ($srcinfo->ino == $destinfo->ino);
+
     MarkChange("hard linking $dest -> $src");
 
-    # Just print?
-    return unless ($update);
+    if (!$update) {
+	# Fake out destination file info - set it to source's, but dont make
+	# any changes
+	SetFileInfo($dest, $srcinfo);
+	return;
+    }
 
+    # Create the link.
     MakeParent($dest);
     my $temp = TempName($dest, %opts);
     link($src, $temp) or die $!;
@@ -3229,15 +3270,6 @@ sub FileSync {
     my $srctype = $si->type;
     my $di = GetFileInfo($destpath);
     my $desttype = $di->type;
-
-    # !!! do I really want to enforce absolute paths?
-#    IsAbsolute($srcpath) or die "file path is not absolute: $srcpath";
-#    IsAbsolute($destpath) or die "file path is not absolute: $destpath";
-
-    die "syncing onto self: $srcpath and $destpath\n"
-	    if (defined $di->dev
-		&& $si->dev == $di->dev
-		&& $si->ino == $di->ino);
 
     if ($srctype eq 'NONE') {
 	# Source does not exist
