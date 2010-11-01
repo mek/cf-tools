@@ -3765,7 +3765,7 @@ sub getos {
 			$version = $4;
 		    } elsif ($line =~ /Red Hat .*release (\d[\d.]*)/) {
 			$version = $1;
-		    } elsif ($line =~ /Fedora Core .*release (\d[\d.]*)/) {
+		    } elsif ($line =~ /Fedora .*release (\d[\d.]*)/) {
 			$osname = 'fedora';
 			$version = $1;
 		    } elsif ($line =~ /CentOS .*release (\d[\d.]*)/) {
@@ -3782,6 +3782,7 @@ sub getos {
 
 		my ($majorversion) = split(/\./, $version);
 		my ($cpuclass) = ReadCommand("uname -i");
+		chomp($cpuclass);
 		$platform = "$osname-$majorversion-$cpuclass";
 	    } elsif ( $class eq 'aix' ) {
 		$osname = 'aix';
