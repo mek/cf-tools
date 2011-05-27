@@ -8,10 +8,14 @@ BEGIN {
     push(@INC, "$scriptdir/lib/perl");
 }
 use Test::More tests => 105;
-use English;
+use English qw( -no_match_vars );
 use File::Temp;
 use File::stat;
 use File::Basename;
+
+eval { require "File::chmod"; };
+my $have_file_chmod = !$@;
+print "have_file_chmod=$have_file_chmod\n";
 
 # Make sure all mode flags are cleared.
 $ENV{CF_FLAGS} = "";
@@ -96,7 +100,7 @@ ok($ENV{CF_FLAGS} !~ /INFORM/, "clearing INFORM flag");
     ok(! -f $tmpfile, "run(), timeout");
 
     SKIP: {
-	skip "not root", 1 unless $UID == 0;
+	skip "not root", 2 unless $UID == 0;
 
 	my $dir = File::Temp::tempdir("cftestoXXXXXX", TMPDIR=>1, CLEANUP=>1);
 	directory(-user=>1, $dir);
@@ -116,8 +120,13 @@ my $tmpfile = "$tmpdir/a";
 `echo hi >$tmpfile`;
 file(-MODE=>755, $tmpfile);
 is(sprintf("%04o", stat($tmpfile)->mode & 07777), "0755", "file(), MODE");
-file(-m=>"g+s", $tmpfile);
-is(sprintf("%04o", stat($tmpfile)->mode & 07777), "2755", "file(), g+s");
+
+SKIP: {
+    skip "no File::chmod", 1 unless $have_file_chmod;
+
+    file(-m=>"g+s", $tmpfile);
+    is(sprintf("%04o", stat($tmpfile)->mode & 07777), "2755", "file(), g+s");
+}
 
 # directory()
 
@@ -219,6 +228,9 @@ Cf::RealRemoveTree("$tmpdir/sub");
     copy(-mode => 755, $src, $dest);
     is(sprintf("%04o", stat($dest)->mode & 07777), "0755", "copy(), MODE");
 
+SKIP: {
+    skip "no File::chmod", 1 unless $have_file_chmod;
+
     chmod(0644, $src) or die $!;
     chmod(0644, $dest) or die $!;
     copy(-mode => "g=rwx", $src, $dest);
@@ -243,6 +255,7 @@ Cf::RealRemoveTree("$tmpdir/sub");
     copy(-mode => "+", $src, $dest);
     is(sprintf("%04o", stat($dest)->mode & 07777), "0644",
 	    "copy(), rel MODE=+, no existing - should get umask");
+}
 
     unlink($src, $dest);
     `echo hi >$src`;
@@ -538,7 +551,7 @@ ok(Cf::IsExcluded( [
     is(fileinfo($src)->type, 'FILE', "fileinfo()->type, FILE");
 
     unlink($src);
-    ok(!fileinfo($src)->exist(), "fileinfo()->exist(), nonexistant");
+    ok(!fileinfo($src)->exist(), "fileinfo()->exist(), nonexistent");
     is(fileinfo($src)->type, 'NONE', "fileinfo()->type, NONE");
 
     unlink($src);
