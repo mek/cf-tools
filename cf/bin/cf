@@ -23,9 +23,24 @@
 # the following optional modules provide extra features or performance:
 #
 # File::Chmod
-# ...
+# LWP
+
+# Benefits
+#
+# Only requires perl5 (ubiquitous)
+#
+# Strong dryrun support - queries on filesystem will think they see the
+# dryrun changes.
+#
+# Backups with undo support (almost complete)
+#
+# Windows support - including registry manipulation
 
 # TODO !!!
+#
+# Resolve problem with duplicat port use on large rcopy
+#
+# Better checksum support (SHA?)
 #
 # Strict checking on options - i've been burned by passing options that are
 # silently ignored.
@@ -34,7 +49,8 @@
 # and even command options.
 #
 # Should all commands follow-links for the initial target path (only
-# recursive follow is off by default)?
+# recursive follow is off by default)? Safest to make these new commands -
+# deprecate the old ones (file2, copy2 ..)
 #
 # Complete tracking changes in DRYRUN mode so that later file comparisons
 # are made correctly - particulary copy is not tracked.
@@ -71,7 +87,7 @@ BEGIN {
 
 use AnyDBM_File;
 use Cwd;
-use English;
+use English qw( -no_match_vars );
 use Fcntl qw( :DEFAULT :flock);
 use File::Compare;
 use File::Copy;
@@ -116,7 +132,10 @@ my $is_root = ($UID == 0)
 
 # Where to store our state files.
 
-my $vardir = $is_root ? '/var/lib/cf' : "$ENV{HOME}/.cf";
+my $vardir = $ENV{CF_VARDIR};
+if (!defined $vardir) {
+    $vardir = $is_root ? '/var/lib/cf' : "$ENV{HOME}/.cf";
+}
 
 # base of configuration script/module tree
 
@@ -1873,6 +1892,10 @@ sub MD5 ($) {
     return $sum;
 }
 
+sub FileDigest($$) {
+    my ($algorithm, $path) = @_;
+}
+
 ##--------
 ## Checksum cache
 ## track file checksums and avoid recomputing if the file modtime is unchanged.
@@ -2796,7 +2819,7 @@ sub Geturl($;$) {
 	    $geturl_ref = \&GeturlCurl;
 	} else {
 	    $geturl_ref = \&GeturlLwp;
-	    $lwp_ua = LWP::UserAgent->new;
+	    $lwp_ua = LWP::UserAgent->new(keep_alive=>2);
 	}
     }
     if ($url =~ /^file:/) {
