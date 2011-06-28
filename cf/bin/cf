@@ -2818,7 +2818,9 @@ sub Geturl($;$) {
 	    # No LWP - fall back to curl
 	    $geturl_ref = \&GeturlCurl;
 	} else {
+	    # Have LWP - use it for all urls
 	    $geturl_ref = \&GeturlLwp;
+	    $gethttp_ref = $geturl_ref;
 	    $lwp_ua = LWP::UserAgent->new(keep_alive=>2);
 	}
     }
