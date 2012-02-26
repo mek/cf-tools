@@ -15,7 +15,6 @@ use File::Basename;
 
 eval { require "File::chmod"; };
 my $have_file_chmod = !$@;
-print "have_file_chmod=$have_file_chmod\n";
 
 # Make sure all mode flags are cleared.
 $ENV{CF_FLAGS} = "";
@@ -100,7 +99,7 @@ ok($ENV{CF_FLAGS} !~ /INFORM/, "clearing INFORM flag");
     ok(! -f $tmpfile, "run(), timeout");
 
     SKIP: {
-	skip "not root", 2 unless $UID == 0;
+	skip "not root", 1 unless $UID == 0;
 
 	my $dir = File::Temp::tempdir("cftestoXXXXXX", TMPDIR=>1, CLEANUP=>1);
 	directory(-user=>1, $dir);
@@ -229,7 +228,7 @@ Cf::RealRemoveTree("$tmpdir/sub");
     is(sprintf("%04o", stat($dest)->mode & 07777), "0755", "copy(), MODE");
 
 SKIP: {
-    skip "no File::chmod", 1 unless $have_file_chmod;
+    skip "no File::chmod", 4 unless $have_file_chmod;
 
     chmod(0644, $src) or die $!;
     chmod(0644, $dest) or die $!;
@@ -600,7 +599,10 @@ ok(Cf::IsExcluded( [
 
 # Checksum tests (perf comparison)
 
-{
+SKIP: {
+    eval { require String::CRC::Cksum; };
+    skip "no String::CRC::Cksum", 7 if $@;
+
     my $tmp = "$tmpdir/foo";
     unlink($tmp);
 
