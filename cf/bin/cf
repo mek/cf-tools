@@ -38,8 +38,6 @@
 
 # TODO !!!
 #
-# Resolve problem with duplicat port use on large rcopy
-#
 # Better checksum support (SHA?)
 #
 # Strict checking on options - i've been burned by passing options that are
@@ -3725,7 +3723,7 @@ push(@EXPORT, '&upload');
 # name? (so that site could have multiple domains and hosts are only unique
 # within a domain)
 
-my $short_host;
+my $short_host = $ENV{CF_HOST};
 sub get_host() {
     if (! defined $short_host) {
 	require Sys::Hostname;
@@ -4175,6 +4173,68 @@ if (not defined $cfbase) {
 # Get mode settings from environment.
 SetFlags(split(':', $envflags));
 
+sub Usage(;$$) {
+    my ($exitcode, $message) = @_;
+    $exitcode = 1 unless defined $exitcode;
+
+    print STDERR $message, "\n" if defined $message;
+    print STDERR <<EOF;
+cf [options] [module:]command [command-options] [arg ..]
+  run 'cf helpcommands' for list of available commands
+  run 'cf helpmodules' for list of available modules
+  run 'cf helpmodcommands MODULE' for list of commands for a module
+  run 'cf man' for detailed help
+EOF
+    exit($exitcode);
+}
+
+
+# Command names that can only be used on the command line (because the name
+# is illegal/reserved in perl)
+my %cmd_alias = (
+    'write' => 'writefile',
+    'link' => 'makelink',
+    'require' => 'requiremodule',
+    'directories' => 'directory',
+);
+
+sub Main() {
+    Usage(1) if ($ARGV[0] eq '-?' or $ARGV[0] eq '--help');
+    my ($cmd, @args) = Cf::parse_args(@ARGV);
+    Usage(1) if (!defined $cmd);
+
+    # perform command
+
+    $cmd = $cmd_alias{$cmd} if defined $cmd_alias{$cmd};
+    my $rv;
+    if ($cmd eq 'man') {
+	# Generate manual page/extended help
+	# autogenerat this instead of using pod?
+	require Pod::Usage;
+	Pod::Usage::pod2usage(-exitstatus => 0, -verbose => 2)
+    } elsif ($cmd =~ /^[a-z]*$/) {
+	# Built-in command
+	$rv = eval "Cf::$cmd(\@args)";
+	if (my $err = $@) {
+	    die "$err\n";
+	}
+    } elsif ($cmd =~ /^(\w*):(.*)/) {
+	# Invoke another configuration module
+	my $module = $1;
+	my $function = $2;
+
+	$rv = Cf::CallModule($module, $function, @args);
+    } else {
+	Usage(1, "$0: bad command: $cmd");
+    }
+
+    my $result_type = Cf::OpResult($cmd);
+    if (defined $result_type) {
+	exit ($rv ? 0 : 1) if $result_type eq 'boolean';
+	print $rv;
+    }
+}
+
 # Module Cleanup
 
 END { }
@@ -4445,77 +4505,15 @@ sub GetOps {
 package main;
 
 import Cf;
-use File::Basename;
+use English (-no_match_vars);
 
 # Precautionary permission mask.
 # !!! shouldn't I let user set this?
 umask(022);
 
-sub usage(;$$) {
-    my ($exitcode, $message) = @_;
-    $exitcode = 1 unless defined $exitcode;
-
-    print STDERR $message, "\n" if defined $message;
-    print STDERR <<EOF;
-cf [options] [module:]command [command-options] [arg ..]
-  run 'cf helpcommands' for list of available commands
-  run 'cf helpmodules' for list of available modules
-  run 'cf helpmodcommands MODULE' for list of commands for a module
-  run 'cf man' for detailed help
-EOF
-    exit($exitcode);
-}
-
-
-# Command names that can only be used on the command line (because the name
-# is illegal/reserved in perl)
-my %cmd_alias = (
-    'write' => 'writefile',
-    'link' => 'makelink',
-    'require' => 'requiremodule',
-    'directories' => 'directory',
-);
-
-sub main() {
-    usage(1) if ($ARGV[0] eq '-?' or $ARGV[0] eq '--help');
-    my ($cmd, @args) = Cf::parse_args(@ARGV);
-    usage(1) if (!defined $cmd);
-
-    # perform command
-
-    $cmd = $cmd_alias{$cmd} if defined $cmd_alias{$cmd};
-    my $rv;
-    if ($cmd eq 'man') {
-	# Generate manual page/extended help
-	# autogenerat this instead of using pod?
-	require Pod::Usage;
-	Pod::Usage::pod2usage(-exitstatus => 0, -verbose => 2)
-    } elsif ($cmd =~ /^[a-z]*$/) {
-	# Built-in command
-	$rv = eval "Cf::$cmd(\@args)";
-	if (my $err = $@) {
-	    die "$err\n";
-	}
-    } elsif ($cmd =~ /^(\w*):(.*)/) {
-	# Invoke another configuration module
-	my $module = $1;
-	my $function = $2;
-
-	$rv = Cf::CallModule($module, $function, @args);
-    } else {
-	usage(1, "$0: bad command: $cmd");
-    }
-
-    my $result_type = Cf::OpResult($cmd);
-    if (defined $result_type) {
-	exit ($rv ? 0 : 1) if $result_type eq 'boolean';
-	print $rv;
-    }
-}
-
-# Process command line - unless being run by regression test script.
-unless ($main::Testing) {
-    main();
+# Process command line if this is the main program (not used as module)
+if ($PROGRAM_NAME eq __FILE__) {
+    Cf::Main();
     exit(0);
 }
 
