@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 105;
+use Test::More tests => 107;
 use English qw( -no_match_vars );
 use File::Temp;
 use File::stat;
@@ -451,6 +451,24 @@ ok(Cf::IsExcluded( [
 
     # Cleanup
     Cf::RealRemoveTree($tmp);
+}
+
+# geturl()
+
+{
+    my $dir = "$tmpdir/d";
+    mkdir($dir) or die $!;
+
+    `echo hi >$dir/foo`;
+    my $url = "file://$dir/foo";
+
+    is(geturl($url), "hi\n",  "geturl()");
+    
+    geturl($url, "$dir/dest");
+    is(Cf::ReadFile("$dir/dest"), "hi",  "geturl(), destination file");
+    
+    # Cleanup
+    Cf::RealRemoveTree($dir);
 }
 
 # deletelines()

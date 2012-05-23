@@ -2525,7 +2525,7 @@ sub TouchFile($%) {
 
 # Get path for storing dry-run contents of file.
 
-sub GetFake($;$) {
+sub GetFake($) {
     my ($path) = @_;
 
     # See if we have a fake copy of file in session files.
@@ -2787,8 +2787,48 @@ sub Decode($) {
 # Retrieve document from URL.
 
 sub geturl {
-    my ($optref, $url) = get_options({}, @_);
-    return Geturl($url);
+    my ($optref, $url, $dest) = get_options({}, @_);
+    my $argslen = @_;
+    if ($argslen < 1 || $argslen > 2) {
+	die "geturl takes 1-2 arguments, not $argslen\n";
+    }
+    
+    if (!defined $dest) {
+	# No target file - simply return contents to calling routine.
+	return Geturl($url);
+    }
+
+    # Sending URL contents to file
+    my $origdest = $dest;
+
+    # Get modtime of destination - to determine if we need a new copy
+    my $mtime = fileinfo($origdest)->mtime;
+
+    if (!$update) {
+	# Not really updating. Get a fake destination path.
+	$dest = MakeFake($origdest);
+    }
+
+    MakeParent($dest);
+    my $temp = TempName($dest, %{$optref});
+    if (defined $mtime) {
+	# Destination exists - set temp file mtime so Geturl can
+	# use If-Modified-Since appropriately
+	RealWriteFile($temp, "");
+	utime(time(), $mtime, $temp) or die $!;
+    }
+
+    my $code = Geturl($url, $temp);
+    if ($code == "304") {
+	# URL is not modified
+	debug("url is not modified: $url");
+	unlink($temp);
+    } else {
+	MarkChange("copying $url to $origdest");
+	MoveTemp($temp, $dest, %{$optref});
+    }
+
+    return $code;
 }
 push(@EXPORT, '&geturl');
 string_op("geturl");
@@ -2838,11 +2878,13 @@ sub GeturlFile($;$) {
     die "bad url: $url\n" unless $path;
 
     if (defined $dest) {
-	# copy
+	# copy file
+	# !!! Not convergent - should be checking if they are the same.
 	File::Copy::copy($path, $dest)
 		or "failed to copy $path to $dest: $!\n";
+	return "200";
     } else {
-	# read
+	# read file to memory
 	return RawReadFile($path);
     }
 }
@@ -2866,6 +2908,7 @@ sub GeturlLite($;$) {
 
     if (defined $dest) {
 	close($fh) or die $!;
+	return $req;
     } else {
 	return $http->body();
     }
@@ -2880,15 +2923,18 @@ sub GeturlLiteCallback {
 sub GeturlLwp($;$) {
     my ($url, $dest) = @_;
     Debug("downloading $url (lwp)");
-    my $req = HTTP::Request->new(GET => $url);
     my $res;
+    my $rv;
     if (defined $dest) {
-	$res = $lwp_ua->request($req, $dest);
+	$res = $lwp_ua->mirror($url, $dest);
+	$rv = $res->code;
     } else {
+	my $req = HTTP::Request->new(GET => $url);
 	$res = $lwp_ua->request($req);
+	$rv = $res->content;
     }
-    die "failed to get $url: ".$res->code if $res->is_error();
-    return $res->content unless defined $dest;
+    die "failed to get $url: ".$res->code."\n" if $res->is_error();
+    return $rv;
 }
 
 
