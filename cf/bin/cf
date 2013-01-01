@@ -24,6 +24,9 @@
 #
 # File::Chmod
 # LWP
+# Crypt::SSLeay or IO::Socket::SSL
+# Digest::MD5
+# String::CRC::Cksum;
 
 # Benefits
 #
@@ -2933,7 +2936,7 @@ sub GeturlLwp($;$) {
 	$res = $lwp_ua->request($req);
 	$rv = $res->content;
     }
-    die "failed to get $url: ".$res->code."\n" if $res->is_error();
+    die "failed to get $url: ".$res->status_line()."\n" if $res->is_error();
     return $rv;
 }
 
