@@ -3794,7 +3794,7 @@ my $hostname;
 sub get_hostname() {
     if (! defined $hostname) {
 	require Sys::Hostname;
-	$short_host = Sys::Hostname::hostname();
+	$hostname = Sys::Hostname::hostname();
     }
     return $hostname;
 }
