@@ -3773,7 +3773,7 @@ sub upload {
 }
 push(@EXPORT, '&upload');
 
-# Get short hostname of this machines.
+# Get hostname used to identify this machine's configuration.
 # Eventually allow sites to includes some domain components in this host
 # name? (so that site could have multiple domains and hosts are only unique
 # within a domain)
@@ -3789,6 +3789,17 @@ sub get_host() {
 }
 push(@EXPORT, '&get_host');
 string_op('get_host');
+
+my $hostname;
+sub get_hostname() {
+    if (! defined $hostname) {
+	require Sys::Hostname;
+	$short_host = Sys::Hostname::hostname();
+    }
+    return $hostname;
+}
+push(@EXPORT, '&get_hostname');
+string_op('get_hostname');
 
 # Get uname (unix-type) - !!! depracated - should shift to getos
 
