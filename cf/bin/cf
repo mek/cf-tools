@@ -2144,7 +2144,7 @@ sub ExGlob($) { return GlobMatch($_[0], 0) }
 # Generate a match item that includes files matching a glob pattern.
 sub InGlob($) { return GlobMatch($_[0], $EX_INCLUDE) }
 
-# Check if file path is excluded my a match list. The match list is a
+# Check if file path is excluded by a match list. The match list is a
 # (reference to) a list of alternating match flags (see $EX_* values defined
 # above) and regular expression patterns.
 
@@ -2172,6 +2172,13 @@ sub IsExcluded($$;$) {
     }
     # No match - return default.
     return $default;
+}
+
+# IsExcluded2 options-reference path [default]
+sub IsExcluded2($$;$) {
+    my ($optref, $path, $default)  = @_;
+    $path = Decode($path) if $optref->{REMOTE_SRC};
+    return IsExcluded($optref->{EXCLUDE}, $path, $default);
 }
 
 # Given system ticks of an event return how many days ago it happened.
@@ -2703,8 +2710,7 @@ sub DirSync {
 	foreach my $file ( ReadDir($destdir) ) {
 	    if ( !$src_exists{$file} ) {
 		my $path = "$destdir/$file";
-		unless ($excluding &&
-			IsExcluded($opts{EXCLUDE}, "$srcdir/$file")) {
+		unless ($excluding && IsExcluded2(\%opts, "$srcdir/$file")) {
 		    RemoveFile($path, @args);
 		}
 	    }
@@ -3326,7 +3332,7 @@ sub FileSync {
 
     Debug("syncing $srcpath to $destpath");
     my $si = GetFileInfo($srcpath);
-    if ($opts{EXCLUDE} && IsExcluded($opts{EXCLUDE}, $srcpath)) {
+    if ($opts{EXCLUDE} && IsExcluded2(\%opts, $srcpath)) {
 	if ($opts{PURGE} eq 'EXCLUDED') {
 	    $si->type('NONE');
 	} else {
