@@ -3786,9 +3786,10 @@ sub get_host() {
         $cfhost = $ENV{CF_HOST};
 
         if (! defined $cfhost) {
-            if (GetFileInfo($hostfile)->exist()) {
+            if (-f $hostfile) {
                 # Not in environment but do have host saved in file
-                $cfhost = ReadFile("$vardir/host");
+                # Need to do a "raw" read to avoid infinite loop!
+                $cfhost = RawReadFile($hostfile);
             } else {
                 # All else has failed - derive cfhost from OS hostname
                 require Sys::Hostname;
