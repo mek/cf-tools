@@ -3790,6 +3790,7 @@ sub get_host() {
                 # Not in environment but do have host saved in file
                 # Need to do a "raw" read to avoid infinite loop!
                 $cfhost = RawReadFile($hostfile);
+                chomp($cfhost);
             } else {
                 # All else has failed - derive cfhost from OS hostname
                 require Sys::Hostname;
