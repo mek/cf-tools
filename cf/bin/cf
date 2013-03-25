@@ -3773,23 +3773,41 @@ sub upload {
 }
 push(@EXPORT, '&upload');
 
-# Get hostname used to identify this machine's configuration.
-# Eventually allow sites to includes some domain components in this host
-# name? (so that site could have multiple domains and hosts are only unique
-# within a domain)
+# Get name used to identify this machine's configuration. Usually the same as the
+# OS hostname, but on a wildcard host this name will be the name of the wildcard
+# group. By default there is no domain suffix included in this name.
 
-my $short_host = $ENV{CF_HOST};
+my $cfhost;
 sub get_host() {
-    if (! defined $short_host) {
-	require Sys::Hostname;
-	$short_host = Sys::Hostname::hostname();
-	$short_host =~ s/\..*//;
+    if (! defined $cfhost) {
+        my $hostfile = "$vardir/host";
+
+        # Try for find host in environment
+        $cfhost = $ENV{CF_HOST};
+
+        if (! defined $cfhost) {
+            if (GetFileInfo($hostfile)->exist()) {
+                # Not in environment but do have host saved in file
+                $cfhost = ReadFile("$vardir/host");
+            } else {
+                # All else has failed - derive cfhost from OS hostname
+                require Sys::Hostname;
+                $cfhost = Sys::Hostname::hostname();
+                $cfhost =~ s/\..*//;
+            }
+        }
+
+        # Save cfhost for later runs.
+        WriteFile($hostfile, $cfhost);
     }
-    return $short_host;
+    return $cfhost;
 }
 push(@EXPORT, '&get_host');
 string_op('get_host');
 
+# Get the OS hostname.
+# Not sure this routine even belongs in cf, but some modules had been using get_host()
+# when they really wanted the OS hostname. Added this routine to ease the conversion.
 my $hostname;
 sub get_hostname() {
     if (! defined $hostname) {
