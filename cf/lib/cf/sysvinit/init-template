@@ -1,0 +1,200 @@
+#!/bin/sh
+#
+# chkconfig: $(levels) $(startnum) $(killnum)
+# description: $(service)
+
+set -e
+
+name="$(service)"
+procname="$(procname)" # as seen in "ps -e"
+server_cmd="$(server_cmd)"
+forks="$(forks)"
+stop_cmd="$(stop_cmd)"
+stop_cmd2="$(stop_cmd2)"	# Also run this after kill server
+reload_cmd="$(reload_cmd)"
+stop_signal="$(stop_signal)"
+reload_signal="$(reload_signal)"
+pidfile="$(pidfile)"
+write_pid="$(write_pid)"
+logfile="$(logfile)"
+lockdir="$(lockdir)"
+user="$(user)"
+restart_delay="$(restart_delay)"
+start_wait=10
+stop_wait=10
+
+$(envs)
+
+start() {
+    # verify it isn't running already
+    proccmd checkprocs && return
+
+    cmd="$server_cmd"
+
+    # See if we need to change users
+    me=`id | sed 's/[^(]*(//;s/).*//'`
+    if [ "$me" != "$user" ]
+    then
+	su=su
+	if su --help 2>/dev/null | grep -- --shell >/dev/null
+	then
+	    su="$su --shell /bin/sh"
+	fi
+	cmd="$su $user -c '$cmd'"
+    fi
+
+    cd /
+    trap "" HUP
+    cmd="$cmd </dev/null"
+    test -z "$logfile" || cmd="$cmd >$logfile 2>&1"
+    test "$forks" = "0" && cmd="$cmd &"
+
+    eval "$cmd"
+    pid=$!
+    test "$write_pid" = "1" && echo $pid >$pidfile
+
+    # wait for start up
+    rc=0
+    i=0
+    while [ $i -lt $start_wait ]
+    do
+	rc=0
+	proccmd checkprocs && break
+	rc=1
+	sleep 1
+	i=`expr $i + 1`
+    done
+
+    # redhat compatibility - needed?
+    test -d "$lockdir" && touch "$lockdir/$name" || true
+    return $rc
+}
+
+stop() {
+    test -d "$lockdir" && rm -f "$lockdir/$name"
+    if [ -z "$stop_cmd" ]
+    then
+	proccmd "kill -$stop_signal" || return 1
+    else
+	eval $stop_cmd || return 1
+    fi
+    if [ ! -z "$stop_cmd2" ]
+    then
+	eval $stop_cmd2 || return 1
+    fi
+
+    # wait for stop
+    rc=0
+    i=0
+    while [ $i -lt $stop_wait ]
+    do
+	rc=0
+	proccmd checkprocs || break
+	rc=1
+	sleep 1
+	i=`expr $i + 1`
+    done
+    return $rc
+}
+
+reload() {
+    if [ ! -z "$reload_cmd" ]
+    then
+	eval $reload_cmd && return
+    elif [ ! -z "$reload_signal" ]
+    then
+	proccmd "kill -$reload_signal" && return
+    fi
+    restart
+}
+
+restart() {
+    stop || true
+    sleep $restart_delay
+    start
+}
+
+checked_pids=""
+checkprocs() {
+    checked_pids="$*"
+    kill -0 $* 2>/dev/null || return 1
+}
+
+status() {
+    if proccmd checkprocs
+    then
+	echo "$name running: $checked_pids"
+	return 0
+    else
+	echo "$name stopped"
+	return 1
+    fi
+}
+
+# Run command appending PIDs of all named processes.
+# !Important! Do not redirect I/O when calling this proccmd - that will
+# spawn another init script process that will likely be mistaken for the
+# server process.
+
+proccmd() {
+    cmd=$1
+
+    # First check for PID file.
+
+    if [ -f "$pidfile" ]
+    then
+	pids=`head -1 "$pidfile"`
+	if [ "$pids" != "" ]
+	then
+	    for pid in $pids
+	    do
+		$cmd $pid || return 1
+	    done
+	    return 0
+	fi
+    fi
+
+    # Fall back to searching ps output - careful not to count myself.
+    if [ "$procname" = "" ]
+    then
+	# No name to search for
+	return 1
+    fi
+
+    if [ "$user" = "root" ]
+    then
+	# Process might have changed to any user - search them all
+	psopts="-e"
+    else
+	psopts="-u $user"
+    fi
+    pids=""
+    for pid in `ps $psopts | grep -w $procname | sed -e 's/^  *//' -e 's/ .*//'`
+    do
+	if [ "$pid" != "$$" ]
+	then
+	    # Not me
+	    if kill -0 $pid 2>/dev/null
+	    then
+		# Not a temporary process
+		pids="$pids $pid"
+	    fi
+	fi
+    done
+    if [ "$pids" != "" ]
+    then
+	$cmd $pids && return 0
+    fi
+
+    return 1
+}
+
+case "$1" in
+start|stop|restart|reload|status)
+    $1
+    ;;
+*)
+    echo "Usage: $0 start|stop|restart|reload|status" 1>&2
+    exit 1
+    ;;
+esac
