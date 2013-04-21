@@ -53,9 +53,6 @@
 # recursive follow is off by default)? Safest to make these new commands -
 # deprecate the old ones (file2, copy2 ..)
 #
-# Complete tracking changes in DRYRUN mode so that later file comparisons
-# are made correctly - particulary copy is not tracked.
-#
 # Consistent path manipulation
 #
 # Implement undo from log
@@ -138,10 +135,6 @@ if (!defined $vardir) {
     $vardir = $is_root ? '/var/lib/cf' : "$ENV{HOME}/.cf";
 }
 
-# base of configuration script/module tree
-
-my $cfbase = $ENV{CF_BASEDIR};
-
 # Modal flags
 my %flags = (
     INFORM => 0,		# Notify of any changes made?
@@ -159,10 +152,6 @@ my %flags = (
     				# be killed (default is 1 hour).
     LOCK_WAIT => 30,		# Seconds to wait before giving up on locks
     				# (default is 30 seconds).
-
-    # For scf - never completed...
-    SCF_SSH => 'ssh',	# ssh used for scf
-    SCF_CF => 'cf',	# Path to cf on remote machines (scf)
 );
 
 # Boolean: actually perform updates (as opposed to going
@@ -527,37 +516,6 @@ sub SetFlagsFromHash(%) {
     }
 }
 
-# Try to find named progam in listed directory. Return full path of program
-# if succesful, otherwise throws an exception.
-
-#sub FindProgram($@) {
-#    my ($progname, @dirs) = @_;
-#    my @endings = ($is_win) ? ('.exe', '.com', '.bat') : ('');
-#    foreach my $dir (@dirs) {
-#	foreach my $suffix (@endings) {
-#	    my $path = $dir . "/$progname$suffix";
-#	    Debug('trying (' . $dir . ') ' . $path);
-#	    return $path if (-x $path && !(-d $path));
-#	}
-#    }
-#    die "could not locate program $progname";
-#}
-
-#-------
-# Path manipulation .. no longer used but should do something instead of the
-# current adhoc manipulation.
-
-#sub GetPath() {
-#    my $sep = ($is_win) ? ';' : ':';
-#
-#    return split($sep, $ENV{PATH});
-#}
-
-#sub PrependPath(@) {
-#    my $sep = ($is_win) ? ';' : ':';
-#
-#    $ENV{PATH} = join($sep, @_) . $sep . $ENV{PATH};
-#}
 
 # Convert native-OS or perl-style file path to cygwin-style path.
 
@@ -651,16 +609,20 @@ push(@EXPORT, '&helpmodcommands');
 
 sub helpmodules {
     my %modbriefs = ();
-    my $base = GetBase();
-    foreach my $script (
-	    glob("$base/*/configure.pl"),
-	    glob("$base/*/configure"),
-	    ) {
-	my $module = basename(dirname($script));
-	open(FILE, "<$script") or die "can't open $module: $!\n";
-	my ($brief) = grep("^#BRIEF:", split(<FILE>));
-	$brief =~ s/^#BRIEF: *//;
-	$modbriefs{$module} = $brief;
+    foreach my $dir (GetPath()) {
+        foreach my $script (
+                glob("$dir/*/cf.pl"),
+                glob("$dir/*/configure.pl"),
+                glob("$dir/*/configure"),
+                ) {
+            my $module = basename(dirname($script));
+            if (!defined $modbriefs{$module}) {
+                open(FILE, "<$script") or die "can't open $module: $!\n";
+                my ($brief) = grep("^#BRIEF:", split(<FILE>));
+                $brief =~ s/^#BRIEF: *//;
+                $modbriefs{$module} = $brief;
+            }
+        }
     }
     foreach my $module (sort(keys(%modbriefs))) {
 	print "$module - $modbriefs{$module}\n";
@@ -732,16 +694,26 @@ sub GetModule($) {
     my ($modname) = @_;
     return $modules{$modname} if defined $modules{$modname};
 
-    my $base = GetBase();
     my $module;
-    if (-f "$base/$modname/configure.pl") {
-	Debug("load (perl) cf module $modname");
-	$module = LoadPerlMod("$base/$modname/configure.pl");
-    } elsif (-x "$base/$modname/configure") {
-	Debug("load (script) cf module $modname");
-	$module = new Cf::ScriptModule($modname, "$base/$modname/configure");
-    } else {
-	die "unknown module: $modname (base=$base)\n";
+    foreach my $base (GetPath()) {
+        if (-f "$base/$modname/cf.pl") {
+            Debug("load (perl) cf module $modname");
+            $module = LoadPerlMod("$base/$modname/cf.pl");
+            last;
+        }
+        if (-f "$base/$modname/configure.pl") {
+            Debug("load (old perl) cf module $modname");
+            $module = LoadPerlMod("$base/$modname/configure.pl");
+            last;
+        }
+        if (-x "$base/$modname/configure") {
+            Debug("load (script) cf module $modname");
+            $module = new Cf::ScriptModule($modname, "$base/$modname/configure");
+            last;
+        }
+    }
+    if (!defined $module) {
+        die "unknown module: $modname\n";
     }
     $modules{$modname} = $module;
     return $module;
@@ -754,16 +726,19 @@ push(@EXPORT, '&get_module');
 
 sub testmod {
     my ($optref, @modules) = get_options({}, @_);
-    my $base = GetBase();
-    if (scalar(@modules) == 0) {
-	foreach my $script (
-		glob("$base/*/configure.pl"),
-		glob("$base/*/configure"),
-		) {
-	    push(@modules, basename(dirname($script)));
-	}
+    my %modname = ();
+    foreach my $base (GetPath()) {
+        if (scalar(@modules) == 0) {
+            foreach my $script (
+                    glob("$base/*/cf.pl"),
+                    glob("$base/*/configure.pl"),
+                    glob("$base/*/configure"),
+                    ) {
+                $modname{basename(dirname($script))} = 1;
+            }
+        }
     }
-    foreach my $mod (@modules) {
+    foreach my $mod (keys(%modname)) {
 	GetModule($mod);
     }
 }
@@ -820,9 +795,12 @@ my $host_modvars_loaded = 0;
 sub LoadHostVars() {
     return if $host_modvars_loaded;
 
-    my $basedir = GetBase();
     my $host = get_host();
-    my $masterfile = "$basedir/PERHOST/$host.ini";
+    my $masterfile;
+    foreach my $basedir ( GetPath() ) {
+        $masterfile = "$basedir/PERHOST/$host.ini";
+        last if (-f $masterfile);
+    }
 
     if (-f $masterfile) {
 	# Reference to variable hash currently being loaded
@@ -847,6 +825,8 @@ sub LoadHostVars() {
 	    my ($key, $val) = split('=', $line, 2);
 	    $var_href->{$key} = $val;
 	}
+    } else {
+        warning("no definitions found for host: $host");
     }
     $host_modvars_loaded = 1;
 }
@@ -865,32 +845,41 @@ sub GetHostVars($) {
     }
 }
 
+sub GetHostModules() {
+    LoadHostVars();
+    return keys(%host_modvars);
+}
+
 sub LoadPerlMod($) {
     my ($script) = @_;
     my $dir = AbsolutePath(dirname($script));
     my $name = basename($dir);
+    my $old_style = (basename($script) eq "configure.pl");
 
     my $package = "Cf::Module::$name";
     my $module = new Cf::ModuleWrap($name, $package);
 
     my $global_defs = "";
     my %vars = (LoadVars("$dir/site.ini"), GetHostVars($name));
-    foreach my $key (keys(%vars)) {
-	die "bad variable name in module $name: $key\n" unless $key =~ /^\w+$/;
-	if ($key =~ /^svc_/) {
-	    eval { Cf::GetModule($vars{$key}) };
-	    if (my $err = $@) {
-		# Skip definition if module not found - it might be a
-		# compile-only module.
-		next if $err =~ /^unknown module:/;
 
-		die $err;
-	    }
-	    $global_defs .= sprintf('my $%s = Cf::GetModule(\'%s\');',
-		    $key, $vars{$key});
-	} else {
-	    $global_defs .= sprintf('my $%s = \'%s\';', $key, $vars{$key});
-	}
+    if ($old_style) {
+        foreach my $key (keys(%vars)) {
+            die "bad variable name in module $name: $key\n" unless $key =~ /^\w+$/;
+            if ($key =~ /^svc_/) {
+                eval { Cf::GetModule($vars{$key}) };
+                if (my $err = $@) {
+                    # Skip definition if module not found - it might be a
+                    # compile-only module.
+                    next if $err =~ /^unknown module:/;
+
+                    die $err;
+                }
+                $global_defs .= sprintf('my $%s = Cf::GetModule(\'%s\');',
+                        $key, $vars{$key});
+            } else {
+                $global_defs .= sprintf('my $%s = \'%s\';', $key, $vars{$key});
+            }
+        }
     }
     eval "package $package;"
 	. 'use strict;'
@@ -924,20 +913,28 @@ sub all {
     # Make sure we have a session.
     GetSession();
 
+    # !!! don't like this location for all services - invading the
+    # otherwise independent cf service
     my $host = get_host();
-    # !!! don't like this location for all services - invading the otherwise
-    # independent cf service
-    my $svfile = GetBase() . "/cf/PERHOST/$host/services";
-    die "no configuration defined for this host: $host\n" unless (-f $svfile);
+    my $svfile;
+    foreach my $dir (GetPath()) {
+        $svfile = "$dir/cf/PERHOST/$host/services";
+        last if (-f $svfile);
+    }
+
+    my @svcs;
+    if (-f $svfile) {
+        # Have and old-style legacy service file - use it.
+        @svcs = split(" ", ReadFile($svfile));
+    } else {
+        # Get all modules configured for this host
+        @svcs = GetHostModules();
+    }
 
     my $lock = new Cf::Lock("all");
 
-    open(FILE, "<$svfile") or die $!;
-    my @svcs = <FILE>;
     my @failed = ();
-    close(FILE) or die $!;
     foreach my $svc (@svcs) {
-	$svc =~ s/[\cM\cJ]*$//;		# chomp() for any text format
 	eval { GetModule($svc)->require(); };
 	if (my $err = $@) {
 	    push(@failed, $svc);
@@ -3314,14 +3311,10 @@ push(@EXPORT, '&str_deletelines');
 sub RemoteSync($$%) {
     my ($srcpath, $destpath, %opts) = @_;
 
-    if ($srcpath =~ /^scf:/) {
-    } else {
-	eval { LoadTreeTOC($srcpath); };
-	if (my $err = $@) {
-	    LoadDirTOC(dirname($srcpath));
-	}
+    eval { LoadTreeTOC($srcpath); };
+    if (my $err = $@) {
+        LoadDirTOC(dirname($srcpath));
     }
-
     FileSync($srcpath, $destpath, %opts, REMOTE_SRC=>1);
 }
 
@@ -3542,237 +3535,6 @@ sub read_command {
 }
 push(@EXPORT, '&read_command');
 
-# Server-side for sync command
-
-my %server_fields = ();
-my $server_root = "$ENV{HOME}/cfsync";
-my $server_writedir = "upload";
-
-sub syncserver {
-    # auto-flush output
-    $| = 1;
-
-    while (my $line = <STDIN>) {
-	chomp($line);
-	my @args = ();
-	foreach my $arg (split(' ', $line)) {
-	    push(@args, Decode($arg));
-	}
-	my $op = shift(@args);
-
-	if ($op eq 'EXIT') {
-	    print "200 bye\n";
-	    last;
-	}
-
-	my ($result, $blob) = eval "Sync_$op(\@args);";
-	if (my $err = $@) {
-	    print "500 ".Encode($err)."\n";
-	} elsif (defined $blob) {
-	    my $len = length($blob);
-	    print "201 ".Encode($result)." $len\n";
-	    print $blob;
-	}  else {
-	    print "200 ".Encode($result)."\n";
-	}
-    }
-}
-push(@EXPORT, '&syncserver');
-
-sub Sync_TOC {
-    my ($relpath) = @_;
-    my $path = $server_root;
-
-    if (length($relpath)) {
-	SyncCheckPath($relpath);
-	$path .= "/$relpath";
-    }
-    my $toc = MakeTOC($path, \%server_fields, 0) ;
-    return("OK", $toc);
-}
-
-sub SyncCheckPath($) {
-    my ($relpath) = @_;
-    if ($relpath !~ m{^[-\w\/\.]*$}	# Allow only alphanum and _-./
-	|| "/$relpath/" =~ m{/\.\./}	# No parent directory relative
-	) {
-	die "illegal path: $relpath\n";
-    }
-}
-
-sub Sync_GET {
-    my ($relpath) = @_;
-    SyncCheckPath($relpath);
-    my $path = "$server_root/$relpath";
-
-    die "not plain file: $path\n" unless -f $path;
-    open(FILE, "<$path") or die "can't open $path: $!\n";
-    binmode(FILE);
-    my $contents = join('', <FILE>) ;
-    close FILE;
-
-    return("OK", $contents);
-}
-
-sub Sync_PUT {
-    my ($relpath, $size, $mtime) = @_;
-
-    die "uploads not allowed\n" unless -d "$server_root/$server_writedir";
-
-    SyncCheckPath($relpath);
-    die "illegal (write) path: $relpath"
-	    unless $relpath =~ "^$server_writedir/";
-    my $path = "$server_root/$relpath";
-
-    my $content;
-    my $actual = read(STDIN, $content, $size);
-    die "only received $actual bytes (expected $size)\n" if $actual != $size;
-
-    RealMakeDir(dirname($path));
-    open(FILE, ">$path") or die "can't write to $path: $!\n";
-    binmode(FILE);
-    print(FILE $content) or die $!;
-    close FILE;
-
-    if (defined $mtime) {
-	utime(time(), $mtime, $path) or die $!;
-    }
-
-    return("OK");
-}
-
-sub SendPut($$$;$) {
-    my ($handles, $url, $content, $mtime) = @_;
-
-    my ($relpath) = ($url =~ m{^scf://[^/]*/(.*)})
-	    or die "bad put target: $url\n";
-    my @args = ($relpath, length($content));
-    push(@args, $mtime) if defined $mtime;
-    SendCommand($handles, 'PUT', $content, @args);
-}
-
-sub SendCommand($$@) {
-    my ($handles, $cmd, $upblob, @args) = @_;
-    my ($rfh, $wfh) = @{$handles};
-
-    my @encargs = ();
-    foreach my $arg (@args) {
-	push(@encargs, Encode($arg));
-    }
-    my $cmdstr = join(' ', $cmd, @encargs);
-    debug("sending: $cmdstr");
-    print $wfh $cmdstr, "\n";
-    if (defined $upblob) {
-	print $wfh $upblob;
-    }
-    $wfh->flush();
-
-    my $line = <$rfh>;
-    chomp($line);
-    debug("  got: $line");
-    my @args = ();
-    foreach my $arg (split(' ', $line)) {
-	push(@args, Decode($arg));
-    }
-    my $code = shift(@args);
-    if ($code eq '500') {
-	die "remote $cmd failed: $args[0]\n";
-    } elsif ($code eq '200') {
-	return $args[0];
-    } elsif ($code eq '201') {
-	my $size = $args[1];
-	my $blob;
-	my $actual = read($rfh, $blob, $size);
-	die $! unless defined $actual;
-	die "only got $actual of $size bytes" if $actual != $size;
-	return $blob;
-    } else {
-	die "unknown result code for $cmd: $code\n";
-    }
-}
-
-my %syncs = ();
-
-sub OpenSyncServer($) {
-    my ($url) = @_;
-
-    # parse dest url
-    my @opts = ();
-    my ($user, $x, $server, $path) =
-	    ($url =~ m{^scf://((\w)*\@)?([\w\.\-]*)/(.*)})
-	    or die "bad sync url: $url\n";
-    my $syncurl = "scf://";
-    if ($user) {
-	push(@opts, '-l', $user) if $user;
-	$syncurl .= "$user\@"
-    }
-    $syncurl .= $server;
-
-    return $syncs{$syncurl} if $syncs{$syncurl};
-
-    # open connection to server
-    my $rfh = new IO::File;
-    my $wfh = new IO::File;
-    my $pid = open2($rfh, $wfh,
-	    $flags{SCF_SSH}." ".join(' ', @opts)." $server "
-	    .$flags{SCF_CF}." syncserver"
-	    );
-    my $handles = [$rfh, $wfh];
-
-    $syncs{$syncurl} = $handles;
-    return $handles;
-}
-
-sub CloseSyncServer($) {
-    my ($url) = @_;
-    my $handles = $syncs{$url};
-
-    SendCommand($handles, 'EXIT');
-
-    my ($rfh, $wfh) = @{$handles};
-    close($wfh) or die $!;
-    close($rfh) or die $!;
-    # !!! wait for pid ?
-}
-
-# Sync to a remote location (upload).
-
-sub upload {
-    my ($optref, $srcdir, $destdir) = get_options(\%parse_opt, @_);
-
-    # parse dest url
-    my @opts = ();
-    my ($user, $x, $server, $destpath) =
-	    ($destdir =~ m{^scf://((\w)*@)?([\w\.\-]*)/(.*)})
-	    or die "bad push target: $destdir\n";
-    push(@opts, '-l', $user) if $user;
-
-
-    # open connection to server
-    my $rfh = new IO::File;
-    my $wfh = new IO::File;
-    #open($fh, "ssh ".join(' ', @opts)." $server cf syncserver|");
-    #open($fh, "ssh ".join(' ', @opts)." $server bin/cf syncserver|");
-    my $pid = open2($rfh, $wfh,
-	    $flags{SCF_SSH}." ".join(' ', @opts)." $server "
-	    .$flags{SCF_CF}." syncserver"
-	    );
-    my $handles = [$rfh, $wfh];
-
-    # Load TOC from server
-    my $toc = SendCommand($handles, 'TOC', undef, $destpath);
-    debug("got toc: $toc");
-    LoadTOC($destdir, $toc, 1);
-
-    DirSync($srcdir, $destdir, REMOTE_DEST=>$handles);
-
-    SendCommand($handles, 'EXIT');
-    close($wfh) or die $!;
-    close($rfh) or die $!;
-    #! wait for pid
-}
-push(@EXPORT, '&upload');
-
 # Get name used to identify this machine's configuration. Usually the same as the
 # OS hostname, but on a wildcard host this name will be the name of the wildcard
 # group. By default there is no domain suffix included in this name.
@@ -3919,12 +3681,6 @@ sub getos {
 }
 push(@EXPORT, '&getos');
 string_op('getos');
-
-# Determine base of configuration script/module tree
-
-sub GetBase() {
-    return $cfbase;
-}
 
 # Get path to session state files. Create new session if one does not exist
 # yet.
@@ -4234,30 +3990,35 @@ push(@EXPORT, '&purge');
 
 # Save copy of flags in environ as it will be reset when we load settings
 # from the file
-my $envflags = $ENV{CF_FLAGS};
 
-# Determine base of configuration script/module tree
-
-if (not defined $cfbase) {
-    # Locate configuration library.
-
-    # First look for library (modules) parallel to this script
-    $cfbase = dirname(AbsolutePath($scriptdir));
-    if (! -f "$cfbase/relnum") {
-	# No library parallel to script - use the default location
-	$cfbase = "/var/lib/cf/inputs";
-    }
-    $ENV{CF_BASEDIR} = $cfbase ;
-
-    # get mode settings from config-file
-    my $flagfile = "$vardir/cf-flags";
-    if ( -f $flagfile ) {
-	SetFlagsFromHash(LoadVars($flagfile));
-    }
+# Determine path for modules
+my @cfpath = ();
+if (defined $ENV{CF_PATH}) {
+    # Already have path defined
+    @cfpath = split(":", $ENV{CF_PATH});
+} elsif (defined $ENV{CF_BASEDIR}) {
+    # Using legacy CF_BASEDIR instead of CF_PATH
+    @cfpath = ($ENV{CF_BASEDIR}, );
 }
+# Store path (without builtin entries) in environment for sub-processes
+$ENV{CF_PATH} = join(":", @cfpath);
+# Add built location to end of path.
+my $scriptbase = dirname(AbsolutePath($scriptdir));
+push(@cfpath,
+        "$scriptbase/lib/cf",
+        $scriptbase,
+        "/var/lib/cf/inputs",
+        );
 
-# Get mode settings from environment.
+# Define global flags. First from config file, and then override from
+# environment.
+my $flagfile = "$vardir/cf-flags";
+if ( -f $flagfile ) {
+    SetFlagsFromHash(LoadVars($flagfile));
+}
+my $envflags = $ENV{CF_FLAGS};
 SetFlags(split(':', $envflags));
+
 
 sub Usage(;$$) {
     my ($exitcode, $message) = @_;
@@ -4272,6 +4033,13 @@ cf [options] [module:]command [command-options] [arg ..]
   run 'cf man' for detailed help
 EOF
     exit($exitcode);
+}
+
+
+# Determine base of configuration script/module tree
+
+sub GetPath() {
+    return @cfpath;
 }
 
 
