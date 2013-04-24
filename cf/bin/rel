@@ -1,0 +1,340 @@
+#!/bin/sh
+#
+# Copyright 2012-2013 Martin Andrews
+#
+#   This program is free software; you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation; either version 2 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program; if not, write to the Free Software
+#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+# $Id:$
+
+set -e
+
+#========
+# Configuration settings
+
+reldir=${RELDIR:-$HOME/.rel}
+
+#========
+
+
+# Print usage and exit with specified code (default is 0)
+Usage()
+{
+    cat <<EOF
+Usage: $0 [OPTION ..] OPERATION [ARG ..]
+    $0 new
+        Create a new release. Prints new release number.
+
+    $0 clone REL
+        Crate a new release and hard link the contents to release REL.
+
+    $0 tag REL [NAME]
+        Finalize new release and set NAME to point at it (default NAME is
+        "current").
+
+    $0 lookup REL
+        Get the release number for specified tag REL (REL can also be a
+        number in which case that number is simply echoed back if the
+        release exists).
+
+    $0 sync DIR [REL] [NAME]
+        Create new release as a clone of REL (default is "current")  and
+        then syncs contents of DIR.  Finally tags release to NAME.  Simple
+        snapshots!
+
+    $0 maintain [MAINTOPTION ..]
+        Perform periodic maintenance on release tree including removal of
+        old untagged releases.
+        --mincount N    Minimum number of untagged releases to keep.
+        --mindays N     Minimum days to keep untagged releases.
+
+Options:
+    -?/--help       Print help
+    --directory DIR, -d DIR
+                    Use DIR for release directory tree.
+                    Default comes from RELDIR environ
+                    variable.
+    --comment MSG, -c MSG
+                    Include string MSG in release log.
+EOF
+    exit $1
+}
+
+
+# Determine who is invoking the command (used in log)
+user=$SSHDO_USER
+if [ "$user" = "" ]
+then
+    user=`whoami`
+fi
+
+# Get current release for a tag
+Op_lookup()
+{
+    lookup_rel=${1:-current}
+    if [ -f "$reldir/$lookup_rel.num" ]
+    then
+        # Existing tag name - get number from *.num
+        cat "$reldir/$lookup_rel.num"
+        return
+    fi
+
+    case "$lookup_rel" in
+    *[a-zA-Z]*)
+        # Tag name that does not exist yet - give 0 so we can initialize a
+        # release tree
+        echo 0;;
+    esac
+
+    # Must be a numeric release number
+    if [ -d "$reldir/$lookup_rel" ]
+    then
+        # Release exists
+        echo "$lookup_rel"
+    else
+        echo "release does not exist: $lookup_rel"
+    fi
+}
+
+Fail()
+{
+    echo "$@" 1>&2
+    exit 1
+}
+
+Debug()
+{
+    case "$debug" in
+    y) echo "$@" ;;
+    esac
+}
+
+# Create a new release. Prints new release number to stdout.
+Op_new()
+{
+    # Make sure release tree exists
+    mkdir -p $reldir
+
+    new_num=`Op_lookup`
+
+    # Find the next unused number
+    while true
+    do
+        new_num=`expr $new_num + 1`
+        if mkdir "$reldir/$new_num" 2>/dev/null
+        then
+            # succeeded in make release directory - its ours!
+            break
+        fi
+    done
+    echo $new_num
+
+    # Update log
+    Log "created release $new_num"
+}
+
+Log()
+{
+    echo `date '+%Y-%m-%d %H:%M:%S'` " ($user) $*$comment" \
+            >> $reldir/log
+}
+
+# Op_clone [REL] - create new release as clone of REL
+Op_clone()
+{
+    clone_oldnum=`Op_lookup $1`
+    clonenum=`Op_new`
+
+    if [ $clone_oldnum != "0" ]
+    then
+        # Old release exists
+        link_tree $reldir/$clone_oldnum $reldir/$clonenum
+    fi
+
+    echo $clonenum
+}
+
+
+# Determine tool we will use to hardlink trees
+if cp --help 2>/dev/null | grep -- --link >/dev/null
+then
+    # cp has --link option (likely gnu) use it.
+    linktool=cp
+else
+    # Use venerable cpio (will have trouble with odd filenames - like
+    # whitespace)
+    linktool=cpio
+fi
+
+# link_tree SRCDIR DESTDIR - hardlink files SRCDIR tree to DESTDIR
+link_tree()
+{
+    linksrc="$1"
+    linkdest="$2"
+
+    case $linktool in
+    cp) cp -al $linksrc/. $linkdest ;;
+    cpio)
+        cwd=`pwd`
+        cd $linksrc
+        find . -print | cpio -pdl $linkdest/
+        cd $cwd
+        ;;
+    *) Fail "bad value for linktool: $linktool"
+    esac
+}
+
+# Op_sync SRCDIR [REL] [TAG] - snapshot $SRCDIR to new release relative to $REL
+Op_sync()
+{
+    syncnum=`Op_clone $2`
+    rsync -rl --delete $1/ $reldir/$syncnum/
+    Op_tag $syncnum $3
+}
+
+
+# Op_tag REL [TAG]
+Op_tag()
+{
+    tag_num=`Op_lookup $1`
+    tag_tag="${2:-current}"
+    tag_oldnum=`Op_lookup $tag_tag`
+
+    if [ -d "$reldir/$tag_oldnum" ]
+    then
+        # Tag is currently pointing at a release
+        # Touch old release so that age checks of release will be relative
+        # to last time it was tagged
+        touch "$reldir/$tag_oldnum"
+    fi
+
+    Log "tagging $tag_num as $tag_tag"
+
+    # Atomically update the TAG.num file
+    echo $tag_num >"$reldir/newnum"
+    mv "$reldir/newnum" "$reldir/$tag_tag.num"
+
+    # Replace TAG link
+    rm -f "$reldir/$tag_tag"
+    ln -s $tag_num "$reldir/$tag_tag"
+
+    # Update modtime of directory
+    touch "$reldir/$tag_num"
+}
+
+# Op_maintain DAYS - perform periodic maintenance
+Op_maintain()
+{
+    mindays=7
+    keep=10
+    while [ $# -gt 0 ]
+    do
+        case "$1" in
+        --mindays|-d) shift; mindays="$1"; shift;;
+        --mincount|-c) shift; keep="$1"; shift;;
+        *) Fail "bad option: $1";;
+        esac
+    done
+
+    # Rotate log
+    rotate_flag="$reldir/.last-rot"
+    if [ ! -f "$rotate_flag" ]
+    then
+        touch "$rotate_flag"
+    fi
+    if [ `Age $rotate_flag` -ge 7 ]
+    then
+        # Its been at least a week since last rotate
+        mkdir -p $reldir/LOGS
+        mv $reldir/log $reldir/LOGS/`date +%Y-%m-%d`
+        touch "$rotate_flag"
+    fi
+
+    # Get list of all the tagged release numbers
+    tagged=":"
+    for tagfile in $reldir/*.num
+    do
+        if [ -f $tagfile ]
+        then
+            tagged="${tagged}`cat $tagfile`:"
+        fi
+    done
+
+    # Loop through files (dirs) in $reldir whose names are purely numeric
+    count=0
+    for subdir in `ls -t $reldir | grep -v '[^0-9]'`
+    do
+        Debug "checking $subdir"
+
+        if echo "$tagged" | grep ":$subdir:" >/dev/null
+        then
+            # this release is tagged - dont delete
+            Debug "$subdir is still in use"
+            continue
+        fi
+
+        # This is an unused release directory
+        count=`expr $count + 1`
+
+        if [ $count -gt "$keep" ]
+        then
+            # We are beyond the minimum required releases
+
+            Debug "$subdir is beyond mincount ($keep)"
+
+            # Check age
+            if [ `Age $reldir/$subdir` -ge "$mindays" ]
+            then
+                # Beyond minimum age - remove it
+                Debug "$subdir is beyond mindays ($mindays)"
+                rm -fr $reldir/$subdir $reldir/$subdir.*
+            fi
+        fi
+    done
+}
+
+# Age FILE - print age (days since last modification) of FILE
+Age() {
+    perl -e 'print int(-M $ARGV[0])' $1
+}
+
+
+#========
+# Main body
+
+# Parse command line
+comment=""
+debug="n"
+while true
+do
+    case "$1" in
+    --help|-\?) Usage ;;
+    --directory|-d) shift; reldir=$1; shift;;
+    --comment|-c) shift; comment=": $1"; shift;;
+    --debug) debug=y; shift;;
+    --) shift; break;;
+    -*) Fail "bad option: $1";;
+    *) break ;;
+    esac
+done
+
+if [ $# -lt 1 ]
+then
+    Usage 1
+fi
+
+# Run operation
+cmd=$1; shift
+Op_$cmd "$@"
+
