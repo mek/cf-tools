@@ -2793,11 +2793,12 @@ sub Decode($) {
 # Retrieve document from URL.
 
 sub geturl {
-    my ($optref, $url, $dest) = get_options({}, @_);
-    my $argslen = @_;
+    my ($optref, @args) = get_options(\%parse_opt, @_);
+    my $argslen = @args;
     if ($argslen < 1 || $argslen > 2) {
-	die "geturl takes 1-2 arguments, not $argslen\n";
+        die "geturl takes 1-2 arguments, not $argslen\n";
     }
+    my ($url, $dest) = @args;
     
     if (!defined $dest) {
 	# No target file - simply return contents to calling routine.
