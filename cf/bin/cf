@@ -947,69 +947,6 @@ sub all {
 }
 
 
-#-------
-# Miscellaneous admin utilities.
-
-# Usage: DisplayMessage($message)
-# Display message box in background (spawn a separate process).
-# Windows only for now - do I want something similar for UNIX? Send mail to
-# logged in users instead (could extend to include people using various
-# services like samba ...)?
-
-#sub DisplayMessage($) {
-#    my $message = shift();
-#    my $pobj;
-#
-#    Sendmail("cfengine notice", $message, LocalUsers());
-#}
-
-
-#my @users;
-#sub LocalUsers() {
-#    if (!scalar(@users)) {
-#	if ($is_win) {
-#	    require Win32::NetAdmin;
-#	    Win32::NetAdmin::LoggedOnUsers('', \@users);
-#	} else {
-#	    my %uflag = ();
-#	    foreach my $line (split("\n", ReadCommand("who"))) {
-#		if ($line =~ /^(\w+)/) {
-#		    $uflag{$1} = 1;
-#		}
-#	    }
-#	    @users = keys(%uflag);
-#	}
-#    }
-#    return @users
-#}
-
-
-#sub Sendmail($$@) {
-#    require Mail::Sender;
-#
-#    my ($subject, $message, @recipients) = @_;
-#    my $sender = new Mail::Sender( {smtp => 'mailhost'} );
-#    die "Mail failed: $Mail::Sender::Error" if !ref($sender);
-#
-#    my $user = 'nobody';
-#    foreach my $varname ('LOGNAME', 'USERNAME') {
-#	if ($ENV{$varname}) {
-#	    $user = $ENV{$varname};
-#	    last;
-#	}
-#    }
-#
-#    # Send the mail.
-#    my $result = $sender->MailMsg( {
-#	    to => join(', ', @recipients),
-#	    from => $user,
-#	    subject => $subject,
-#	    msg => $message,
-#	    } );
-#    die "Mail failed: $Mail::Sender::Error" if !ref($result);
-#}
-
-
 #----------------------------------------------------------------------
 # Windows Registry utility routines.
 
@@ -1503,43 +1440,109 @@ sub TempName($%) {
 ##--------
 ## Database (hash in file) manipulation
 
-# Tie hash to database file - never mind the type. Acquires an exclusive lock
-# on the database file too.
+my $tie_ref;
+my $bdbenv;
+my $tiefile_concurrent = 0;
+eval {
+    require BerkeleyDB;
+};
+if (my $err = $@) {
+    # Fall back to generic AnyDBM_File
+    Debug("BerkeleyDB is not available, using AnyDBM_File");
+    $tie_ref = \&TieAnyDBM;
+} else {
+    Debug("using BerkeleyDB");
+    $bdbenv = new BerkeleyDB::Env(
+            -Home => $vardir,
+            -Flags => BerkeleyDB::DB_CREATE()
+                |BerkeleyDB::DB_INIT_CDB()
+                |BerkeleyDB::DB_INIT_MPOOL(),
+            ) or die "cannot open environment: $BerkeleyDB::Error\n";
+    $tie_ref = \&TieBerkeleyDB;
+    $tiefile_concurrent = 1;
+}
 
-my %tieinfo = ();
+
+# Tie hash to database file. Also provides locking to avoid corruption by
+# parallel processes.
+
 sub TieFile(\%$) {
-    my ($mapref, $path) = @_;
+    my ($href, $path) = @_;
 
-    return if tied %{$mapref};
+    return if tied %{$href};
     Debug("tieing $path");
 
     RealMakeDir(dirname($path));
-    my $lock = "$path.lock";
-    my $lockfh = new IO::File;
-    open ($lockfh, ">>$lock") or die "can't open $lock: $!\n";
-    flock($lockfh, LOCK_EX) or die "can't lock $lock $!\n";
-    tie(%{$mapref}, 'AnyDBM_File', $path, O_CREAT|O_RDWR, 0644)
-	    or die "can't open $path: $!\n";
-    $tieinfo{$mapref} = [$path, $lockfh];
+    $tie_ref->($href, $path);
 }
 
 # Release tie to database file.
 
 sub UntieFile(\%) {
-    my ($mapref) = @_;
+    my ($href) = @_;
 
-    return unless tied %{$mapref};
-
-    my ($path, $lockfh) = @{ $tieinfo{$mapref} };
-    my $lock = "$path.lock";
-
-    Debug("untie-ing $path");
-
-    untie %{$mapref};
-    flock($lockfh, LOCK_UN) or die "can't unlock $lock $!\n";
-    close($lockfh) or die $!;
-    delete $tieinfo{$mapref};
+    return unless tied %{$href};
+    $tie_ref->($href, undef);
 }
+
+# Low-level tie command. If path is not defined then will untie the specified
+# hash.
+sub Tie(\%$) {
+    my ($href, $path) = @_;
+    if (not defined $tie_ref) {
+	# figure out how to tie files
+    }
+}
+
+# Tie hash to database file with BerkeleyDB). Configures locking to avoid
+# trouble with concurrent access.
+my %tieinfo = ();
+sub TieBerkeleyDB(\%$) {
+    my ($href, $path) = @_;
+
+    if ($path) {
+        Debug("tie-ing $path with BerkeleyDB");
+        tie(%{$href}, "BerkeleyDB::Hash",
+                -Filename => $path,
+                -Mode => 0644,
+                -Flags => BerkeleyDB::DB_CREATE(),
+                -Env => $bdbenv)
+                or die "cannot open database: $BerkeleyDB::Error\n";
+    } else {
+        Debug("untie-ing $path");
+        untie %{$href};
+    }
+}
+
+# Tie hash to database file with AnyDBM (never mind the type). Acquires an
+# exclusive lock on the database file too.
+my %tieinfo = ();
+sub TieAnyDBM(\%$) {
+    my ($href, $path) = @_;
+
+    if ($path) {
+        my $lock = "$path.lock";
+        my $lockfh = new IO::File;
+        open ($lockfh, ">>$lock") or die "can't open $lock: $!\n";
+        flock($lockfh, LOCK_EX) or die "can't lock $lock $!\n";
+        tie(%{$href}, 'AnyDBM_File', $path, O_CREAT|O_RDWR, 0644)
+                or die "can't open $path: $!\n";
+        $tieinfo{$href} = [$path, $lockfh];
+    } else {
+        # Remove tie
+        my ($path, $lockfh) = @{ $tieinfo{$href} };
+        my $lock = "$path.lock";
+
+        Debug("untie-ing $path");
+
+        untie %{$href};
+        flock($lockfh, LOCK_UN) or die "can't unlock $lock $!\n";
+        close($lockfh) or die $!;
+        delete $tieinfo{$href};
+    }
+}
+
+##--------
 
 # Kill specified process (assuming it exists) and verify that process no
 # longer exists. Tries escalating series of signals. Returns 1 if process is
@@ -1904,7 +1907,7 @@ my $cksum_lock;		# Cf lock on the checksum table.
 
 # Open checksum db and tie to %cksums.
 sub TieCksum() {
-    if (!defined $cksum_lock) {
+    if (!$tiefile_concurrent && !defined $cksum_lock) {
 	# Acquire high-level lock - this allows other cf sessions to kill us
 	# if we hang too long (without it the flock() that TieFile does will
 	# block indefinitely)
@@ -3761,8 +3764,10 @@ sub PreSpawn() {
 	$logfh = undef;
     }
 
-    # Flush file checksums.
-    UntieCksum();
+    if (!$tiefile_concurrent) {
+        # Flush file checksums.
+        UntieCksum();
+    }
 
     # Flush change count.
     # Only need to do this if we have an external change file and more than
