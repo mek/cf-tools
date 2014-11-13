@@ -1452,12 +1452,6 @@ if (my $err = $@) {
     $tie_ref = \&TieAnyDBM;
 } else {
     Debug("using BerkeleyDB");
-    $bdbenv = new BerkeleyDB::Env(
-            -Home => $vardir,
-            -Flags => BerkeleyDB::DB_CREATE()
-                |BerkeleyDB::DB_INIT_CDB()
-                |BerkeleyDB::DB_INIT_MPOOL(),
-            ) or die "cannot open environment: $BerkeleyDB::Error\n";
     $tie_ref = \&TieBerkeleyDB;
     $tiefile_concurrent = 1;
 }
@@ -1500,6 +1494,15 @@ my %tieinfo = ();
 sub TieBerkeleyDB(\%$) {
     my ($href, $path) = @_;
 
+    if (!defined $bdbenv) {
+        RealMakeDir($vardir);
+        $bdbenv = new BerkeleyDB::Env(
+                -Home => $vardir,
+                -Flags => BerkeleyDB::DB_CREATE()
+                    |BerkeleyDB::DB_INIT_CDB()
+                    |BerkeleyDB::DB_INIT_MPOOL(),
+                ) or die "cannot open environment: $BerkeleyDB::Error\n";
+    }
     if ($path) {
         Debug("tie-ing $path with BerkeleyDB");
         tie(%{$href}, "BerkeleyDB::Hash",
