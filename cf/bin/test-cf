@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 107;
+use Test::More tests => 111;
 use English qw( -no_match_vars );
 use File::Temp;
 use File::stat;
@@ -19,6 +19,10 @@ my $have_file_chmod = !$@;
 # Make sure all mode flags are cleared.
 $ENV{CF_FLAGS} = "";
 
+my $tmpdir = File::Temp::tempdir("cftestXXXXXX", TMPDIR => 1, CLEANUP => 1);
+#my $tmpdir = File::Temp::tempdir("cftestXXXXXX", TMPDIR => 1);
+$ENV{CF_VARDIR} = "$tmpdir/cf";
+
 # Load Cf package - without running main command line processing.
 {
     $main::Testing = 1;
@@ -28,9 +32,6 @@ $ENV{CF_FLAGS} = "";
     die "can't do cf: $!" unless defined $do_code;
 }
 import Cf;
-
-my $tmpdir = File::Temp::tempdir("cftestXXXXXX", TMPDIR => 1, CLEANUP => 1);
-#my $tmpdir = File::Temp::tempdir("cftestXXXXXX", TMPDIR => 1);
 
 # SetFlags()
 
@@ -614,6 +615,30 @@ ok(Cf::IsExcluded( [
   
     unlink($tmp);
 }
+
+# Logging
+
+Cf::SetFlags('LOG=1');
+
+{
+    my $tmp = "$tmpdir/a";
+
+    # New file creation
+    touch($tmp);
+    my $logs = Cf::RawReadFile("$tmpdir/cf/log");
+    like($logs, qr/info writing/, "info log");
+    like($logs, qr/ $PID-\d+ info/, "log session ID");
+    like($logs, qr/undo tidy/, "undo log");
+
+    # Updating timestamp
+    touch($tmp);
+    $logs = Cf::RawReadFile("$tmpdir/cf/log");
+    like($logs, qr/info touching/, "info touching log");
+  
+    unlink($tmp);
+}
+
+Cf::SetFlags('LOG=0');
 
 # Checksum tests (perf comparison)
 

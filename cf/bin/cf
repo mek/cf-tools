@@ -650,7 +650,7 @@ my $change_file;
 my $last_read_changes = 0;
 sub ChangeCount() {
     if (!defined($change_count)) {
-	if (defined $change_file) {
+	if (-f $change_file) {
 	    # In a multi-process configuration session - get changes from
 	    # session state.
 	    $last_read_changes = ReadFile($change_file);
@@ -666,7 +666,7 @@ sub MarkChange(@) {
     Info(@_);
     ChangeCount();
     $change_count++;
-    if (defined($change_file) && $change_count == $last_read_changes + 1) {
+    if (-f $change_file && $change_count == $last_read_changes + 1) {
 	# Always write out the first change after sync with change file - so
 	# that if the process exits it will be noted that a change has
 	# occured.
@@ -1219,7 +1219,8 @@ sub Log ($$$@)
 		$logfh->autoflush(1);
 	    }
 	    my $tstamp = time();
-	    print($logfh "$tstamp $file_level $message\n");
+            my $sid = GetSessionID();
+	    print($logfh "$tstamp $sid $file_level $message\n");
 	}
     }
 
@@ -3689,24 +3690,17 @@ sub getos {
 push(@EXPORT, '&getos');
 string_op('getos');
 
-# Get path to session state files. Create new session if one does not exist
-# yet.
+# Get unique Identifier for this CF run.
+#
+my $session_id;
+sub GetSessionID() {
+    return $session_id;
+}
+
+# Get path to session state files. Create session directory if it doesn't exist.
 
 sub GetSession() {
-    return $ENV{CF_SESSION} if (defined $ENV{CF_SESSION});
-
-    # Create unique identifier for this session: concatenate process id and
-    # current time (in seconds)
-    my $now = time();
-    my $sid = "$PID-$now";
-    my $session = "$vardir/session/$sid";
-    my $host = get_host();
-    my $uname = get_uname();
-
-    Undo("debug", "starting session $sid");
-
-    $ENV{CF_SESSION} = $session;
-    SetSession();
+    my $session = $ENV{CF_SESSION};
 
     RealMakeDir($session);
 
@@ -3715,8 +3709,9 @@ sub GetSession() {
     RealWriteFile($change_file, $changes);
 
     # !!! this script needs to be thought out more carefully!
-    # what exactly are it's duties:
-    # *
+    # what exactly are it's duties?
+    my $host = get_host();
+    my $uname = get_uname();
     RealWriteFile("$session/init.sh", <<EOF );
 CF_UNAME="$uname"; export CF_UNAME
 CF_SESSION="$session"; export CF_SESSION
@@ -3750,15 +3745,6 @@ EOF
     return $session;
 }
 
-# Define session-based globals
-
-sub SetSession() {
-    my $session = $ENV{CF_SESSION};
-    $change_file = "$session/changes";
-}
-
-SetSession() if (defined $ENV{CF_SESSION});
-
 # Clean up (flush) various things before spawning a child cf process.
 sub PreSpawn() {
     # Flush log
@@ -3776,7 +3762,7 @@ sub PreSpawn() {
     # Only need to do this if we have an external change file and more than
     # one change has been made since the last sync with the change file
     # (first change is flushed immediately).
-    if (defined $change_file && $change_count > $last_read_changes+1) {
+    if (-f $change_file && $change_count > $last_read_changes+1) {
 	RealWriteFile($change_file, $change_count);
     }
     undef $change_count;
@@ -3997,6 +3983,17 @@ push(@EXPORT, '&purge');
 #--------
 # Initialize environment
 
+# Define session-based globals
+if (!defined $ENV{CF_SESSION}) {
+    # Create unique identifier for this session: concatenate process id and
+    # current time (in seconds)
+    my $now = time();
+    my $sid = "$PID-$now";
+    $ENV{CF_SESSION} = "$vardir/session/$sid";
+}
+$change_file = "$ENV{CF_SESSION}/changes";
+$session_id = basename($ENV{CF_SESSION});
+
 # Save copy of flags in environ as it will be reset when we load settings
 # from the file
 
@@ -4068,6 +4065,7 @@ sub Main() {
 
     # perform command
 
+    Undo("debug", "starting session for: " . join(" ", @ARGV));
     $cmd = $cmd_alias{$cmd} if defined $cmd_alias{$cmd};
     my $rv;
     if ($cmd eq 'man') {
@@ -4378,6 +4376,8 @@ umask(022);
 if ($PROGRAM_NAME eq __FILE__) {
     Cf::Main();
     exit(0);
+} else {
+    Cf::Undo("debug", "starting libary session for: $0 " . join(" ", @ARGV));
 }
 
 1;
