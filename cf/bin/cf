@@ -1430,12 +1430,28 @@ sub TempName($%) {
 	$path = "$tempdir/".basename($path);
     }
 
-    if ( -e $path ) {
-	# Temporary path already exists - remove it (assume it is from a
-	# prior aborted run ... is this reasonably safe?).
+    if (lstat($path)) {
+	# Temporary path already exists
+        die "recent temp file already exists: $path" if IsRecent($path);
+        # File is old, remove it (assume it is from a old aborted run)
 	RemoveFile($path, 'BACKUP' => 'NONE');
     }
     return $path;
+}
+
+# Usage: IsRecent(PATH)
+# Return 1 if the path was recently modified (ctime), otherwise 0.
+
+sub IsRecent($) {
+    my ($path) = @_;
+    Debug("checking if $path is recent");
+    my $ctime = (lstat($path))[10];
+    my $now = time;
+    if ($now - $ctime < 60) {
+        # File is less than 60 seconds old
+        return 1
+    }
+    return 0
 }
 
 ##--------
@@ -1747,10 +1763,17 @@ sub PurgeBackupIndex() {
     UntieFile(%pathmap);
 }
 
+# Move directory tree to a temporary "old" position so it can be replaced with
+# new contents.
 sub MoveOld($%) {
     my ($path, %opts) = @_;
     my $old = TempName($path, %opts, TEMPSUFFIX=>"-cfold");
-    RealRemoveTree($old) if (stat($old));
+    if (lstat($old)) {
+        # Temporary old position already exists
+        die "recent temp file already exists: $path" if IsRecent($old);
+        # Remove old temp file
+        RealRemoveTree($old);
+    }
     rename($path, $old) or die "can't move $path to $old: $!\n";
     return $old;
 }
@@ -1785,8 +1808,11 @@ sub MoveTemp($$%) {
 	$old = MoveOld($target, %opts);
     }
     my $rc = rename($tmp, $target);
-    if (!$rc && (-l $target || -e _)) {
+    if (!$rc && lstat($target)) {
 	# Move failed and target location exists
+        if (!lstat($tmp)) {
+            die "temp file $tmp disappeared while updating $target\n";
+        }
 	# Try moving target out of the way instead of deleting (if this is
 	# cygwin may be locked by nasty OS).
 	$old = MoveOld($target, %opts);
@@ -1866,7 +1892,8 @@ sub ReadDir {
     my %skip = ( "." => 1, ".." => 1,);
     opendir(DIR, $path) or die "$!: $path\n";
     while ( defined(my $child = readdir(DIR)) ) {
-	push(@children, $child) unless $skip{$child};
+	next if $skip{$child};
+	push(@children, $child);
     }
     closedir(DIR);
 

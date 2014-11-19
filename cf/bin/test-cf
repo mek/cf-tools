@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 111;
+use Test::More tests => 114;
 use English qw( -no_match_vars );
 use File::Temp;
 use File::stat;
@@ -308,6 +308,29 @@ SKIP: {
 
     unlink($src, $src2);
     Cf::RealRemoveTree($src3);
+}
+
+{
+    my $src = "$tmpdir/a";
+    my $dest = "$tmpdir/b";
+    mkdir($src) or die $!;
+    mkdir($dest) or die $!;
+    `echo hi >$src/foo`;
+    `echo bye >$dest/bar`;
+
+    copy(-copytype => 'cksum', -recurse=>10, '--delete', $src, $dest);
+    is(Cf::RawReadFile("$dest/foo"), "hi\n", "recursive copy+delete, add file");
+    ok(!-f "$dest/bar", "recursive copy+delete, remove file");
+
+    # Create what appears to be a cf temporary file
+    `echo hi2 >$src/foo`;
+    `echo bye >$dest/foo-cfnew`;
+
+    eval { copy(-copytype => 'cksum', -recurse=>10, '--delete', $src, $dest); };
+    like($@, qr/recent temp file already exists/, "copy and existing temp file (should throw error)");
+
+    Cf::RealRemoveTree($src);
+    Cf::RealRemoveTree($dest);
 }
 
 # rcopy()
