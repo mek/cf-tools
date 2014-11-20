@@ -4011,12 +4011,14 @@ push(@EXPORT, '&purge');
 # Initialize environment
 
 # Define session-based globals
+my $new_session = 0;
 if (!defined $ENV{CF_SESSION}) {
     # Create unique identifier for this session: concatenate process id and
     # current time (in seconds)
     my $now = time();
     my $sid = "$PID-$now";
     $ENV{CF_SESSION} = "$vardir/session/$sid";
+    $new_session = 1;
 }
 $change_file = "$ENV{CF_SESSION}/changes";
 $session_id = basename($ENV{CF_SESSION});
@@ -4092,7 +4094,7 @@ sub Main() {
 
     # perform command
 
-    Undo("debug", "starting session for: " . join(" ", @ARGV));
+    Debug("starting session for: " . join(" ", @ARGV)) if $new_session;
     $cmd = $cmd_alias{$cmd} if defined $cmd_alias{$cmd};
     my $rv;
     if ($cmd eq 'man') {
@@ -4403,8 +4405,6 @@ umask(022);
 if ($PROGRAM_NAME eq __FILE__) {
     Cf::Main();
     exit(0);
-} else {
-    Cf::Undo("debug", "starting libary session for: $0 " . join(" ", @ARGV));
 }
 
 1;
