@@ -1784,11 +1784,8 @@ sub MoveOld($%) {
 sub MoveTemp($$%) {
     my ($tmp, $target, %opts) = @_;
 
-    # (Silently) set attributes of temp file.
-    my $inform = $flags{INFORM};
-    $flags{INFORM} = 0;
+    # Set attributes of temp file.
     CheckFile($tmp, %opts, RECURSE=>0, TARGETPATH=>$target);
-    $flags{INFORM} = $inform;
 
     my $umount_tries = 0;
     while (IsMount($target) ) {
@@ -2232,6 +2229,11 @@ sub CheckFile($%) {
     }
     my $fi = GetFileInfo($path);
 
+    # Is $path a temporary location? If it is we dont need to log changes to
+    # it as the calling function will be logging changes to the final
+    # destination.
+    my $is_temp = defined $opts{TARGETPATH};
+
     # Define target location - to be used for relative perm specification.
     # If no target is specified or the target does not exist use the temp
     # file for relative perm calculation instead.
@@ -2281,9 +2283,9 @@ sub CheckFile($%) {
 	}
 	Debug("checking $path owner is $user ($uid), old is " . $fi->uid);
 	if ($uid != $fi->uid) {
-	    MarkChange("setting owner of $path to $user");
+	    MarkChange("setting owner of $path to $user") unless $is_temp;
 	    if ($update) {
-		Undo("fix", $path, -user=> $fi->uid);
+		Undo("fix", $path, -user=> $fi->uid) unless $is_temp;
 		chown($uid, -1, $path) or die $!;
 		$fi = GetFileInfo($path);
 	    }
@@ -2310,9 +2312,9 @@ sub CheckFile($%) {
 	}
 	Debug("checking $path group is $group ($gid), old is " . $fi->gid);
 	if ($gid != $fi->gid) {
-	    MarkChange("setting group of $path to $group");
+	    MarkChange("setting group of $path to $group") unless $is_temp;
 	    if ($update) {
-		Undo("fix", $path, -group=> $fi->gid);
+		Undo("fix", $path, -group=> $fi->gid) unless $is_temp;
 		chown(-1, $gid, $path) or die $!;
 		$fi = GetFileInfo($path);
 	    }
@@ -2347,9 +2349,9 @@ sub CheckFile($%) {
 	my $mode_str = sprintf("%04o", $mode);
 	Debug("checking $path mode is $mode_str");
 	if ($mode != ($fi->perm) ) {
-	    MarkChange("setting mode of $path to $mode_str");
+	    MarkChange("setting mode of $path to $mode_str") unless $is_temp;
 	    if ($update) {
-		Undo("fix", $path, -mode=> $fi->perm);
+		Undo("fix", $path, -mode=> $fi->perm) unless $is_temp;
 		chmod($mode, $path) or die $!;
 	    }
 	}
