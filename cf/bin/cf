@@ -3730,6 +3730,10 @@ sub GetSessionID() {
 
 sub GetSession() {
     my $session = $ENV{CF_SESSION};
+    if (-d $session) {
+        # Already have a session directory
+        return $session;
+    }
 
     RealMakeDir($session);
 
@@ -3761,11 +3765,17 @@ fi
 EOF
 
     # Clean up old sessions once a day.
-    my $cleanflag = "$vardir/session.cleanup";
+    my $session_dir = "$vardir/session";
+    my $cleanflag = "$session_dir.cleanup";
     if (!-f $cleanflag || -M $cleanflag >= 1) {
 	# Remove session files over 2 days old
-	Tidy("$vardir/session",
-		RECURSE=>1, MTIME=>2, BACKUP=>'NONE', RMDIR=>1);
+        # don't use any routine that needs a session!
+        foreach my $sub (ReadDir($session_dir)) {
+            my $subpath = "$session_dir/$sub";
+            if (-M $subpath > 2) {
+                RealRemoveTree($subpath);
+            }
+        }
 
 	# Update flag
 	RealWriteFile($cleanflag, "");

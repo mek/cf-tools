@@ -7,7 +7,7 @@ BEGIN {
     my $scriptdir = $FindBin::Bin;
     push(@INC, "$scriptdir/lib/perl");
 }
-use Test::More tests => 114;
+use Test::More tests => 116;
 use English qw( -no_match_vars );
 use File::Temp;
 use File::stat;
@@ -15,6 +15,9 @@ use File::Basename;
 
 eval { require "File::chmod"; };
 my $have_file_chmod = !$@;
+
+# Make sure we get a new session when running as other user
+delete $ENV{CF_SESSION};
 
 # Make sure all mode flags are cleared.
 $ENV{CF_FLAGS} = "";
@@ -32,6 +35,25 @@ $ENV{CF_VARDIR} = "$tmpdir/cf";
     die "can't do cf: $!" unless defined $do_code;
 }
 import Cf;
+
+# Session cleanup
+{
+    my $old_session = "$ENV{CF_VARDIR}/session/old";
+    my $clean_flag = "$ENV{CF_VARDIR}/session.cleanup";
+    my $now = time();
+
+    `mkdir -p $old_session`;
+    utime($now, $now-3*24*3600, $old_session) or die $!;
+    `rm -f $clean_flag`;
+    my $session = Cf::GetSession();
+    ok(! -d $old_session, "GetSession, remove old sessions");
+
+    `mkdir -p $old_session`;
+    utime($now, $now-3*24*3600, $old_session) or die $!;
+    `rm -f $clean_flag`;
+    $session = Cf::GetSession();
+    ok(!-f $clean_flag, "GetSession, repeated won't remove old sessions");
+}
 
 # SetFlags()
 
