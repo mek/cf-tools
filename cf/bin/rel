@@ -37,7 +37,7 @@ Usage: $0 [OPTION ..] OPERATION [ARG ..]
         Create a new release. Prints new release number.
 
     $0 clone REL
-        Crate a new release and hard link the contents to release REL.
+        Create a new release and hard link the contents to release REL.
 
     $0 tag REL [NAME]
         Finalize new release and set NAME to point at it (default NAME is
@@ -73,7 +73,7 @@ EOF
 
 
 # Determine who is invoking the command (used in log)
-user=$SSHDO_USER
+user=$USER
 if [ "$user" = "" ]
 then
     user=`whoami`
@@ -94,7 +94,8 @@ Op_lookup()
     *[a-zA-Z]*)
         # Tag name that does not exist yet - give 0 so we can initialize a
         # release tree
-        echo 0;;
+        echo 0
+        return ;;
     esac
 
     # Must be a numeric release number
