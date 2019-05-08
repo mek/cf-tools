@@ -6,7 +6,7 @@ manipulations of files, but adds a modular mechanism for building higher level
 configuration operations, for example manipulating user accounts or cron
 entries.
 
-# Mat Kovach <mkvach@alal.com>
+* Mat Kovach <mkovach@alal.com>
 
 Well, somebody had to take over ... :) 
 
